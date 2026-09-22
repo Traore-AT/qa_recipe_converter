@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; padding: 0; background: #f1f5f9; font-family: 'Segoe UI', Arial, sans-serif; }
+    .container { max-width: 560px; margin: 40px auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    .header { background: linear-gradient(135deg, #1e40af, #3b82f6); padding: 32px; text-align: center; }
+    .header h1 { color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; }
+    .body { padding: 32px; color: #334155; line-height: 1.6; }
+    .body h2 { color: #1e293b; font-size: 18px; margin: 0 0 16px; }
+    .body p { margin: 0 0 16px; }
+    .uc-card { background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #3b82f6; }
+    .uc-card .label { font-size: 13px; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+    .uc-card .value { font-size: 15px; color: #1e293b; margin-top: 4px; }
+    .btn { display: inline-block; background: #3b82f6; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 500; margin: 8px 0; }
+    .footer { padding: 24px 32px; background: #f8fafc; text-align: center; color: #94a3b8; font-size: 13px; }
+    .footer a { color: #3b82f6; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="{{ site_url }}/static/logo_global.jpeg" alt="Global-itec" style="width: 48px; height: 48px; border-radius: 8px; margin-bottom: 12px; background: rgba(255,255,255,0.15); padding: 4px;">
+      <h1>Nouveau cas de test assigné</h1>
+    </div>
+    <div class="body">
+      <h2>Bonjour {{ member_name }},</h2>
+      <p><strong>{{ assigned_by_name }}</strong> vous a assigné un cas de test dans le sprint <strong>"{{ sprint_name }}"</strong> du projet <strong>"{{ project_name }}"</strong> ({{ team_name }}).</p>
+
+      <div class="uc-card">
+        <div class="label">Cas de test</div>
+        <div class="value">UC#{{ use_case_order }}</div>
+      </div>
+      {% if use_case_id %}
+      <div class="uc-card">
+        <div class="label">ID</div>
+        <div class="value">{{ use_case_id }}</div>
+      </div>
+      {% endif %}
+      {% if use_case_description %}
+      <div class="uc-card">
+        <div class="label">Description</div>
+        <div class="value">{{ use_case_description }}</div>
+      </div>
+      {% endif %}
+
+      <p style="text-align: center;">
+        <a href="{{ board_url }}" class="btn">Voir le tableau Kanban</a>
+      </p>
+    </div>
+    <div class="footer">
+      <p>QA Recipe Converter — Gestion de recettes QA</p>
+      <p><a href="{{ site_url }}">{{ site_url }}</a></p>
+    </div>
+  </div>
+</body>
+</html>

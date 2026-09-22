@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.md
+.env.development
+.vscode
+.idea
+__pycache__
+*.pyc
+.DS_Store
+Thumbs.db
+db/*.sqlite3

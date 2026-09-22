@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Inter', sans-serif; font-size: 11pt; color: #191c1e; }
+  h1 { font-size: 22pt; color: #00288e; margin-bottom: 4px; }
+  h2 { font-size: 14pt; color: #1e40af; border-bottom: 2px solid #c4c5d5; padding-bottom: 4px; margin-top: 24px; }
+  h3 { font-size: 12pt; color: #0058be; margin-top: 16px; margin-bottom: 8px; }
+  .meta { color: #444653; font-size: 10pt; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #dde1ff; text-align: left; padding: 8px 10px; font-size: 10pt; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e0e3e5; font-size: 10pt; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 9pt; font-weight: 600; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  .badge-yellow { background: #fef3c7; color: #92400e; }
+  .badge-gray { background: #f3f4f6; color: #4b5563; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+  .stats { display: flex; gap: 16px; margin: 16px 0; }
+  .stat-card { border: 1px solid #e0e3e5; border-radius: 8px; padding: 12px 16px; flex: 1; text-align: center; }
+  .stat-value { font-size: 18pt; font-weight: 700; }
+  .stat-label { font-size: 9pt; color: #444653; }
+  .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #c4c5d5; font-size: 9pt; color: #757684; }
+</style>
+</head>
+<body>
+  <h1>Daily Scrum — {{ team.name }}</h1>
+  <div class="meta">
+    <strong>Date :</strong> {{ date|date:"l d F Y" }}<br>
+    <strong>Généré par :</strong> {{ generated_by }}
+  </div>
+
+  <h2>Résumé des projets</h2>
+  <div class="stats">
+    <div class="stat-card"><div class="stat-value">{{ stats.total_projects }}</div><div class="stat-label">Projets</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.total_ucs }}</div><div class="stat-label">Cas de test</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.completed_ucs }}</div><div class="stat-label">Terminés</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.success_rate }}%</div><div class="stat-label">Taux réussite</div></div>
+  </div>
+
+  <h2>Projets actifs</h2>
+  {% for p in projects %}
+  <h3>{{ p.name }}</h3>
+  <p style="font-size:10pt;color:#444653;">{{ p.description|truncatewords:30 }}</p>
+  <table>
+    <tr><th>Statut</th><th>Total</th><th>Passés</th><th>Échoués</th><th>Bloqués</th><th>Réussite</th></tr>
+    <tr>
+      <td>
+        {% if p.status == 'active' %}<span class="badge badge-blue">Actif</span>
+        {% elif p.status == 'completed' %}<span class="badge badge-green">Terminé</span>
+        {% else %}<span class="badge badge-gray">Archivé</span>{% endif %}
+      </td>
+      <td>{{ p.stats.total }}</td>
+      <td><span class="badge badge-green">{{ p.stats.passed }}</span></td>
+      <td><span class="badge badge-red">{{ p.stats.failed }}</span></td>
+      <td><span class="badge badge-yellow">{{ p.stats.blocked }}</span></td>
+      <td><strong>{{ p.stats.success_rate }}%</strong></td>
+    </tr>
+  </table>
+
+  <h4>Cas de test par statut</h4>
+  <table>
+    <tr><th>ID</th><th>Description</th><th>Statut</th><th>Automatisé</th></tr>
+    {% for uc in p.use_cases %}
+    <tr>
+      <td>{{ uc.use_case_id|default:"—" }}</td>
+      <td>{{ uc.description|truncatewords:20 }}</td>
+      <td>
+        {% if uc.status == 'Passé' %}<span class="badge badge-green">{{ uc.status }}</span>
+        {% elif uc.status == 'Échoué' %}<span class="badge badge-red">{{ uc.status }}</span>
+        {% elif uc.status == 'Bloqué' %}<span class="badge badge-yellow">{{ uc.status }}</span>
+        {% elif uc.status == 'En cours' %}<span class="badge badge-blue">{{ uc.status }}</span>
+        {% else %}<span class="badge badge-gray">{{ uc.status }}</span>{% endif %}
+      </td>
+      <td>{{ uc.is_automated|yesno:"✅,❌" }}</td>
+    </tr>
+    {% endfor %}
+    {% if not p.use_cases %}<tr><td colspan="4" style="color:#757684;">Aucun cas de test</td></tr>{% endif %}
+  </table>
+  {% endfor %}
+
+  <h2>Membres de l'équipe</h2>
+  <table>
+    <tr><th>Membre</th><th>Email</th><th>Rôle</th></tr>
+    {% for m in members %}
+    <tr><td>{{ m.user.full_name }}</td><td>{{ m.user.email }}</td><td><span class="badge badge-blue">{{ m.role }}</span></td></tr>
+    {% endfor %}
+  </table>
+
+  <div class="footer">
+    Rapport généré automatiquement depuis QA Recipe Converter — {{ date|date:"Y-m-d H:i" }}
+  </div>
+</body>
+</html>

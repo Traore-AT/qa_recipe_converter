@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Inter', sans-serif; font-size: 11pt; color: #191c1e; }
+  h1 { font-size: 22pt; color: #00288e; margin-bottom: 4px; }
+  h2 { font-size: 14pt; color: #1e40af; border-bottom: 2px solid #c4c5d5; padding-bottom: 4px; margin-top: 24px; }
+  h3 { font-size: 12pt; color: #0058be; margin-top: 16px; margin-bottom: 8px; }
+  .meta { color: #444653; font-size: 10pt; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #dde1ff; text-align: left; padding: 8px 10px; font-size: 10pt; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e0e3e5; font-size: 10pt; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 9pt; font-weight: 600; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  .badge-yellow { background: #fef3c7; color: #92400e; }
+  .badge-gray { background: #f3f4f6; color: #4b5563; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+  .stats { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; }
+  .stat-card { border: 1px solid #e0e3e5; border-radius: 8px; padding: 12px 16px; min-width: 120px; flex: 1; text-align: center; }
+  .stat-value { font-size: 18pt; font-weight: 700; }
+  .stat-label { font-size: 9pt; color: #444653; }
+  .progress-bar { height: 12px; background: #e0e3e5; border-radius: 6px; overflow: hidden; margin: 4px 0; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #10b981, #059669); border-radius: 6px; }
+  .section-summary { margin: 8px 0; padding: 8px 12px; background: #f7f9fb; border-left: 3px solid #1e40af; font-size: 10pt; }
+  .trend-up { color: #065f46; }
+  .trend-down { color: #991b1b; }
+  .trend-neutral { color: #92400e; }
+  .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #c4c5d5; font-size: 9pt; color: #757684; }
+</style>
+</head>
+<body>
+  <h1>Rapport Hebdomadaire</h1>
+  <div class="meta">
+    <strong>Équipe :</strong> {{ team.name }}<br>
+    <strong>Période :</strong> {{ week_start|date:"d F Y" }} → {{ week_end|date:"d F Y" }}<br>
+    <strong>Généré par :</strong> {{ generated_by }}<br>
+    <strong>Date :</strong> {{ date|date:"l d F Y H:i" }}
+  </div>
+
+  <h2>Vue d'ensemble</h2>
+  <div class="stats">
+    <div class="stat-card"><div class="stat-value">{{ stats.total_projects }}</div><div class="stat-label">Projets</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.active_projects }}</div><div class="stat-label">Actifs</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.total_ucs }}</div><div class="stat-label">Cas totaux</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.completed_ucs }}</div><div class="stat-label">Terminés</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.failed_ucs }}</div><div class="stat-label">Échoués</div></div>
+    <div class="stat-card"><div class="stat-value">{{ stats.success_rate }}%</div><div class="stat-label">Taux réussite</div></div>
+  </div>
+
+  <div class="progress-bar"><div class="progress-fill" style="width:{{ stats.success_rate }}%"></div></div>
+
+  <h2>Projets</h2>
+  {% for p in projects %}
+  <h3>{{ p.name }}</h3>
+  <div class="section-summary">
+    <strong>Statut :</strong> {{ p.get_status_display }} ·
+    <strong>Cas :</strong> {{ p.stats.total }} ·
+    <strong>Réussite :</strong> {{ p.stats.success_rate }}%
+  </div>
+  <table>
+    <tr><th>Statut</th><th>Passés</th><th>Échoués</th><th>Bloqués</th><th>Non joués</th><th>Réussite</th><th>Auto.</th></tr>
+    <tr>
+      <td>
+        {% if p.status == 'active' %}<span class="badge badge-blue">Actif</span>
+        {% elif p.status == 'completed' %}<span class="badge badge-green">Terminé</span>
+        {% else %}<span class="badge badge-gray">Archivé</span>{% endif %}
+      </td>
+      <td><span class="badge badge-green">{{ p.stats.passed }}</span></td>
+      <td><span class="badge badge-red">{{ p.stats.failed }}</span></td>
+      <td><span class="badge badge-yellow">{{ p.stats.blocked }}</span></td>
+      <td>{{ p.stats.not_run }}</td>
+      <td><strong>{{ p.stats.success_rate }}%</strong></td>
+      <td>{{ p.stats.automated }}</td>
+    </tr>
+  </table>
+
+  <h4>Détail des cas de test</h4>
+  <table>
+    <tr><th>#</th><th>ID</th><th>Description</th><th>Statut</th><th>Auto.</th></tr>
+    {% for uc in p.use_cases %}
+    <tr>
+      <td>{{ uc.order }}</td>
+      <td>{{ uc.use_case_id|default:"—" }}</td>
+      <td>{{ uc.description|truncatewords:15 }}</td>
+      <td>
+        {% if uc.status == 'Passé' %}<span class="badge badge-green">{{ uc.status }}</span>
+        {% elif uc.status == 'Échoué' %}<span class="badge badge-red">{{ uc.status }}</span>
+        {% elif uc.status == 'Bloqué' %}<span class="badge badge-yellow">{{ uc.status }}</span>
+        {% elif uc.status == 'En cours' %}<span class="badge badge-blue">{{ uc.status }}</span>
+        {% else %}<span class="badge badge-gray">{{ uc.status }}</span>{% endif %}
+      </td>
+      <td>{{ uc.is_automated|yesno:"✅,❌" }}</td>
+    </tr>
+    {% endfor %}
+    {% if not p.use_cases %}<tr><td colspan="5" style="color:#757684;">Aucun cas de test</td></tr>{% endif %}
+  </table>
+  {% endfor %}
+
+  <h2>Membres de l'équipe ({{ members|length }})</h2>
+  <table>
+    <tr><th>Membre</th><th>Email</th><th>Rôle</th><th>Depuis</th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.user.full_name }}</td>
+      <td>{{ m.user.email }}</td>
+      <td><span class="badge badge-blue">{{ m.role }}</span></td>
+      <td>{{ m.joined_at|date:"d/m/Y" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <div class="footer">
+    Rapport hebdomadaire généré automatiquement depuis QA Recipe Converter.<br>
+    Période : {{ week_start|date:"Y-m-d" }} → {{ week_end|date:"Y-m-d" }} · Généré le {{ date|date:"Y-m-d H:i" }}
+  </div>
+</body>
+</html>
