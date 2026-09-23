@@ -20,6 +20,7 @@ db/
 media/
 staticfiles/
 .env
+render.env
 
 # Docker
 .docker/
