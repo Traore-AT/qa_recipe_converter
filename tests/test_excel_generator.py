@@ -16,6 +16,7 @@ def make_mock_uc(order, uc_id, description, is_automated=False, status='À teste
     uc.observed_results = ''
     uc.is_automated = is_automated
     uc.status = status
+    uc.jira_ticket = ''
     return uc
 
 
@@ -97,10 +98,11 @@ class TestExcelGenerator:
         rows = [row for row in ws.iter_rows(min_row=4, max_row=5) if row[0].value]
         assert rows[0][0].value == 1      # N° (row number)
         assert rows[0][1].value == 'UC-001'  # CAS from uc.order
-        assert rows[0][2].value == 'Login test'
+        assert rows[0][2].value in (None, '')  # Tickets Jira (vide par défaut)
+        assert rows[0][3].value == 'Login test'  # Use Case
         assert rows[1][0].value == 2      # N° (row number = index)
         assert rows[1][1].value == 'UC-042'  # CAS from uc.order
-        assert rows[1][2].value == 'Logout test'
+        assert rows[1][3].value == 'Logout test'
 
     def test_cas_in_automated_sheet(self):
         ucs = [
@@ -114,7 +116,7 @@ class TestExcelGenerator:
         rows = [row for row in ws.iter_rows(min_row=4) if isinstance(row[0].value, int)]
         assert len(rows) == 1
         assert rows[0][1].value == 'UC-001'
-        assert rows[0][2].value == 'Auto test'
+        assert rows[0][3].value == 'Auto test'
 
     def test_source_filename_in_title(self):
         ucs = [make_mock_uc(1, 'UC001', 'Test')]

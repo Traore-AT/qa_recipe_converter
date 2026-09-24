@@ -104,7 +104,11 @@ class TestHealthAndCSRF:
 # JOB LIST / DETAIL
 # ─────────────────────────────────────────────────────────────────────────────
 class TestJobListAPI:
-    def test_list_returns_paginated_results(self, api_client, pending_job, done_job, error_job):
+    def test_list_returns_paginated_results(self, api_client, pending_job, done_job, error_job, job_owner):
+        for job in (pending_job, done_job, error_job):
+            job.uploaded_by = job_owner
+            job.save()
+        api_client.force_authenticate(user=job_owner)
         resp = api_client.get('/api/jobs/')
         assert resp.status_code == 200
         assert 'results' in resp.data
@@ -112,10 +116,11 @@ class TestJobListAPI:
         assert resp.data['count'] >= 3
         assert len(resp.data['results']) >= 3
 
-    def test_list_ordered_by_created_at_desc(self, api_client, pending_job):
+    def test_list_ordered_by_created_at_desc(self, api_client, job_owner):
         old = ConversionJob.objects.create(
             source_filename='old.docx',
             word_file='uploads/word/old.docx',
+            uploaded_by=job_owner,
         )
         # Force old created_at in the past
         old.created_at = timezone.now() - timedelta(hours=2)
@@ -124,8 +129,10 @@ class TestJobListAPI:
         recent = ConversionJob.objects.create(
             source_filename='recent.docx',
             word_file='uploads/word/recent.docx',
+            uploaded_by=job_owner,
         )
 
+        api_client.force_authenticate(user=job_owner)
         resp = api_client.get('/api/jobs/')
         slugs = [j['source_filename'] for j in resp.data['results']]
         # Most recent first

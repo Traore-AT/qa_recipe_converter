@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 # Mapping des colonnes reconnues (insensible à la casse, variantes incluses)
 COLUMN_ALIASES = {
     'use_case_text': [
-        'use case', 'usecase', 'cas de test',
+        'use case', 'usecase', 'cas de test', 'uc',
     ],
     'description': [
         'description', 'titre', 'intitule', 'libelle',
@@ -55,7 +55,12 @@ def detect_column(header: str) -> str | None:
     h = normalize(header)
     for field, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
-            if alias in h or h in alias:
+            # Alias court (2-3 lettres ex. "UC") : correspondance mot entier pour
+            # éviter les faux positifs ("réduction", "document", …).
+            if len(alias) <= 3:
+                if h == alias or h.startswith(alias + ' ') or h.endswith(' ' + alias):
+                    return field
+            elif alias in h or h in alias:
                 return field
     return None
 

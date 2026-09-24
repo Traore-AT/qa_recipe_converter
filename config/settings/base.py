@@ -73,6 +73,24 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
+# Stockage des mots de passe : Argon2 en premier (vérification de login plus
+# rapide que PBKDF2 sur les CPUs contraints de Render, et résistance supérieure).
+# PBKDF2 reste dans la liste pour valider les comptes déjà créés ; les nouveaux
+# mots de passe (inscription / réinitialisation) sont hachés en Argon2.
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+]
+# Paramètres Argon2 calibrés pour rester rapides sur du CPU mutualisé tout en
+# restant au-dessus des minimums OWASP (time=2, mem=46144 KiB, p=2).
+ARGON2_PARAMETERS = {
+    'time_cost': 2,
+    'memory_cost': 47104,
+    'parallelism': 2,
+    'hash_len': 32,
+}
+
 LANGUAGE_CODE = 'fr-fr'
 TIME_ZONE = 'Europe/Paris'
 USE_I18N = True
