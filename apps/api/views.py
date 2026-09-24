@@ -19,6 +19,7 @@ from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
+from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 
 from apps.teams.permissions import can_manage_project
@@ -53,7 +54,7 @@ class CsrfTokenView(APIView):
     permission_classes = []
 
     def get(self, request):
-        return Response({'detail': 'CSRF cookie set'})
+        return Response({'csrfToken': get_token(request)})
 
 
 class UploadAPIView(APIView):

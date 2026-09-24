@@ -96,7 +96,7 @@ class TestHealthAndCSRF:
     def test_csrf_sets_cookie(self, api_client):
         resp = api_client.get('/api/csrf/')
         assert resp.status_code == 200
-        assert resp.data['detail'] == 'CSRF cookie set'
+        assert resp.data['csrfToken']
         assert 'csrftoken' in resp.cookies or 'Set-Cookie' in resp
 
 
