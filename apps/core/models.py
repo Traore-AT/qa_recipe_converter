@@ -82,6 +82,9 @@ class ExtractedUseCase(models.Model):
     observed_results = models.TextField(blank=True)
     is_automated     = models.BooleanField(default=False)
     status           = models.CharField(max_length=20, choices=UCStatus.choices, default=UCStatus.TO_TEST)
+    jira_ticket      = models.CharField(max_length=100, blank=True, default='',
+                                        verbose_name='Ticket Jira',
+                                        help_text='Numéro du ticket Jira lié à ce cas de test (ex : QA-123)')
 
     class Meta:
         ordering     = ['order']

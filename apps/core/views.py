@@ -41,6 +41,7 @@ def _uc_to_dict(uc):
         'observed_results': uc.observed_results,
         'is_automated':     uc.is_automated,
         'status':           uc.status,
+        'jira_ticket':      uc.jira_ticket,
     }
 
 
@@ -158,6 +159,7 @@ class PreviewView(View):
                 uc.observed_results = uc_data.get('observed_results', uc.observed_results)
                 uc.is_automated     = uc_data.get('is_automated',     uc.is_automated)
                 uc.status           = uc_data.get('status',           uc.status)
+                uc.jira_ticket      = uc_data.get('jira_ticket',      uc.jira_ticket)
                 uc.save()
 
             automated_count = job.use_cases.filter(is_automated=True).count()

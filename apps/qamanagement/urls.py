@@ -23,6 +23,8 @@ urlpatterns = [
     # ── Use Case Execution ───────────────────────────────────────────────────
     path('teams/<slug:slug>/projects/<slug:project_slug>/use-cases/<uuid:uc_id>/status/',
          views.UseCaseStatusUpdateView.as_view(), name='uc-status-update'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/use-cases/<uuid:uc_id>/jira/',
+         views.UseCaseJiraUpdateView.as_view(), name='uc-jira-update'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/use-cases/<uuid:uc_id>/comments/',
          views.UseCaseCommentListCreateView.as_view(), name='uc-comments'),
 

@@ -44,13 +44,24 @@ class UseCaseAssignmentSerializer(serializers.ModelSerializer):
     use_case_order     = serializers.IntegerField(source='use_case.order', read_only=True)
     use_case_id_str    = serializers.CharField(source='use_case.use_case_text', read_only=True)
     use_case_desc      = serializers.CharField(source='use_case.description', read_only=True)
+    jira_ticket        = serializers.CharField(source='use_case.jira_ticket', read_only=True)
+    jira_url           = serializers.SerializerMethodField()
 
     class Meta:
         model = UseCaseAssignment
         fields = ['id', 'use_case', 'use_case_order', 'use_case_id_str', 'use_case_desc',
+                  'jira_ticket', 'jira_url',
                   'sprint', 'assigned_to', 'assigned_to_user', 'assigned_by',
                   'assigned_by_user', 'assigned_at', 'status']
         read_only_fields = ['id', 'assigned_by', 'assigned_at', 'status']
+
+    def get_jira_url(self, obj):
+        from django.conf import settings
+        base = (getattr(settings, 'JIRA_BASE_URL', '') or '').rstrip('/')
+        ticket = (obj.use_case.jira_ticket or '').strip()
+        if base and ticket:
+            return f'{base}/browse/{ticket}'
+        return None
 
 
 class CreateAssignmentSerializer(serializers.Serializer):

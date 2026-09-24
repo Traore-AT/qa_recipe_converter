@@ -10,6 +10,7 @@ Génère un fichier Excel professionnel avec :
 import io
 import os
 import base64
+from django.conf import settings
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -54,6 +55,7 @@ META_ROW_HEIGHT   = 22
 
 COLUMNS = [
     ('cas',              'CAS',                12),
+    ('jira_ticket',      'Tickets Jira',       18),
     ('use_case_text',    'Use Case',           18),
     ('description',      'Description',         40),
     ('preconditions',    'Préconditions',        35),
@@ -211,6 +213,10 @@ class ExcelGenerator:
             ws.append(row_data)
             excel_row = row_num + 3   # title(1) + meta(1) + header(1) = offset 3
 
+            jira_base_url = (getattr(settings, 'JIRA_BASE_URL', '') or '').rstrip('/')
+            jira_ticket = (getattr(uc, 'jira_ticket', '') or '').strip()
+            jira_link = f"{jira_base_url}/browse/{jira_ticket}" if jira_base_url and jira_ticket else None
+
             if uc.is_automated:
                 fill = auto_fill
             elif row_num % 2 == 0:
@@ -229,8 +235,13 @@ class ExcelGenerator:
                 if fill:
                     cell.fill = fill
 
-                # Status column coloring (col_idx 9 = Status, 1-based after N°)
-                if col_idx == 9:
+                # Jira ticket column (col_idx 3) → hyperlink vers le ticket
+                if col_idx == 3 and jira_ticket:
+                    cell.font = Font(size=10, name='Calibri', color="1A5FB4", underline='single')
+                    cell.hyperlink = jira_link
+
+                # Status column coloring (col_idx 10 = Status, 1-based after N°)
+                if col_idx == 10:
                     status_val = uc.status if hasattr(uc, 'status') else ''
                     if status_val in STATUS_FILLS:
                         cell.fill = STATUS_FILLS[status_val]
@@ -243,7 +254,7 @@ class ExcelGenerator:
             for s in screenshots:
                 img_path = s.get('image_path')
                 if img_path and os.path.exists(img_path):
-                    image_attachments.append((excel_row, 7, img_path))  # col 7 = observed_results
+                    image_attachments.append((excel_row, 9, img_path))  # col 9 = observed_results
 
             # Dynamic row height: base 60, more if comments/screenshots
             comment_count = len(extras.get('comments', []))

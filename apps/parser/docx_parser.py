@@ -29,6 +29,10 @@ COLUMN_ALIASES = {
         'resultats observes', 'resultat observe',
         'observe', 'observed', 'obtenu', 'resultat obtenu'
     ],
+    'jira_ticket': [
+        'ticket jira', 'jira ticket', 'jira', 'num jira', 'n jira',
+        'num de ticket', 'ref jira', 'reference jira', 'id jira',
+    ],
 }
 
 

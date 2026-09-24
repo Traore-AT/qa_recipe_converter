@@ -23,7 +23,8 @@ class ExtractedUseCaseSerializer(serializers.ModelSerializer):
         model = ExtractedUseCase
         fields = [
             'id', 'order', 'use_case_text', 'description', 'preconditions',
-            'steps', 'expected_results', 'observed_results', 'is_automated', 'status', 'comments'
+            'steps', 'expected_results', 'observed_results', 'is_automated', 'status',
+            'jira_ticket', 'comments'
         ]
 
     def get_comments(self, obj):

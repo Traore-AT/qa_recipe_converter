@@ -167,3 +167,7 @@ AVATAR_MAX_SIZE_MB = 2
 
 # Base URL for absolute links in emails
 SITE_URL = os.getenv('SITE_URL', 'http://localhost:8000')
+
+# Base URL of the Jira instance (ex: https://acme.atlassian.net)
+# Used to build hyperlinks "browse/<KEY>" in the Excel recipe and the Kanban.
+JIRA_BASE_URL = os.getenv('JIRA_BASE_URL', '')

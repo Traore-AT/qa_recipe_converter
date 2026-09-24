@@ -316,6 +316,23 @@ class UseCaseStatusUpdateView(APIView):
         })
 
 
+class UseCaseJiraUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def patch(self, request, slug, project_slug, uc_id):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job__project=project)
+
+        uc.jira_ticket = (request.data.get('jira_ticket') or '').strip()
+        uc.save()
+
+        return Response({
+            'id': str(uc.id),
+            'jira_ticket': uc.jira_ticket,
+        })
+
+
 class UseCaseCommentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
