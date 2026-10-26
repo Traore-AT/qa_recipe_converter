@@ -65,3 +65,11 @@ SECURE_HSTS_PRELOAD = True
 
 # Absolute base URL used in emails (set to the Render backend URL)
 SITE_URL = _require_env('SITE_URL')
+
+# ── Logs d'erreurs 500 visibles dans les logs Render ─────────────────────────
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {"django.request": {"handlers": ["console"], "level": "ERROR"}},
+}
