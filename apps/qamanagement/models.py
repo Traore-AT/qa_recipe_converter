@@ -94,6 +94,8 @@ class Defect(models.Model):
         REOPENED   = 'reopened',   'Réouvert'
 
     id                  = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket_number       = models.CharField(max_length=20, unique=True, blank=True, db_index=True)
+    sprint              = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='defects')
     use_case            = models.ForeignKey('core.ExtractedUseCase', on_delete=models.SET_NULL, null=True, blank=True, related_name='defects')
     project             = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='defects')
     title               = models.CharField(max_length=300)
@@ -115,6 +117,12 @@ class Defect(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Anomalie'
         verbose_name_plural = 'Anomalies'
+
+    def save(self, *args, **kwargs):
+        if not self.ticket_number:
+            # Stable human-readable identifier without relying on a racy per-project sequence.
+            self.ticket_number = f'TKT-{self.pk.hex[:8].upper()}'
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'[{self.get_severity_display()}] {self.title}'

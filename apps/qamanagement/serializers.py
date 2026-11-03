@@ -81,14 +81,14 @@ class DefectSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Defect
-        fields = ['id', 'use_case', 'project', 'title', 'description',
+        fields = ['id', 'ticket_number', 'sprint', 'use_case', 'project', 'title', 'description',
                   'severity', 'priority', 'status',
                   'reported_by', 'reported_by_user',
                   'assigned_to', 'assigned_to_user',
                   'steps_to_reproduce', 'expected_behavior', 'actual_behavior',
                   'environment', 'attachment',
                   'created_at', 'updated_at']
-        read_only_fields = ['id', 'reported_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'ticket_number', 'project', 'reported_by', 'created_at', 'updated_at']
 
     def validate_attachment(self, value):
         if value:
@@ -104,7 +104,7 @@ class DefectSerializer(serializers.ModelSerializer):
 class DefectCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Defect
-        fields = ['use_case', 'title', 'description', 'severity', 'priority',
+        fields = ['sprint', 'use_case', 'title', 'description', 'severity', 'priority',
                   'assigned_to', 'steps_to_reproduce', 'expected_behavior',
                   'actual_behavior', 'environment', 'attachment']
 

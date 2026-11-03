@@ -55,6 +55,14 @@ qa_recipe/
 | Teams & Projets | Multi-utilisateurs, rôles, invitations |
 | Dashboard | KPIs, statistiques, activité récente |
 
+### Comptes d'équipe et tickets Kanban
+
+- Un propriétaire peut créer un compte avec nom d'utilisateur, mot de passe (8 caractères minimum) et rôle, puis l'ajouter à une ou plusieurs équipes dont il est propriétaire depuis le tableau de l'équipe.
+- Depuis un sprint, le tableau affiche des tickets autonomes avec identifiant `TKT-XXXXXXXX`, création, modification des champs, suppression et recherche exacte/partielle par numéro. Ces tickets réutilisent le suivi d'anomalies du projet et ne nécessitent pas de cas de test associé.
+- L'affectation en lot des cas de test propose une case « Sélectionner tous les cas » parmi les cas non assignés.
+
+La migration `qamanagement.0003_defect_sprint_defect_ticket_number` doit être appliquée avant d'utiliser les tickets dans un environnement existant (`python manage.py migrate`). L'API de création des comptes est `POST /api/teams/members/create/` et accepte `username`, `password`, `role` et `team_slugs`; elle vérifie que l'utilisateur connecté est propriétaire de toutes les équipes demandées.
+
 ---
 
 ## Pipeline de conversion
