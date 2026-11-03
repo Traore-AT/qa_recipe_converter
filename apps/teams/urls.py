@@ -14,6 +14,7 @@ urlpatterns = [
 
     # ── Teams ────────────────────────────────────────────────────────────────
     path('teams/',         views.TeamListCreateView.as_view(), name='team-list'),
+    path('teams/members/create/', views.OwnerCreateMemberView.as_view(), name='owner-create-member'),
     path('teams/<slug:slug>/', views.TeamDetailView.as_view(), name='team-detail'),
 
     # ── Team Members ─────────────────────────────────────────────────────────

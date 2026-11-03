@@ -6,6 +6,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db.models import Q, Sum
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.views import APIView
@@ -19,6 +20,7 @@ from .serializers import (
     TeamSerializer, TeamCreateSerializer,
     TeamMemberSerializer, TeamInvitationSerializer, InviteMemberSerializer,
     UpdateMemberRoleSerializer,
+    OwnerCreateMemberSerializer,
     ProjectSerializer, ProjectCreateSerializer,
     ProjectMemberSerializer, AddProjectMemberSerializer,
     ExtractedUseCaseSerializerBasic,
@@ -264,6 +266,31 @@ class TeamMemberListView(APIView):
         send_invitation_email(invitation)
 
         return Response(TeamInvitationSerializer(invitation).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class OwnerCreateMemberView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = OwnerCreateMemberSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        teams = list(Team.objects.filter(slug__in=serializer.validated_data['team_slugs']))
+        if len(teams) != len(serializer.validated_data['team_slugs']):
+            return Response({'team_slugs': ['Une ou plusieurs équipes sont introuvables.']}, status=status.HTTP_404_NOT_FOUND)
+        if any(team.owner_id != request.user.id for team in teams):
+            return Response({'error': 'Seul le propriétaire peut créer des membres pour ces équipes.'}, status=status.HTTP_403_FORBIDDEN)
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=serializer.validated_data['username'],
+                password=serializer.validated_data['password'],
+            )
+            TeamMember.objects.bulk_create([
+                TeamMember(team=team, user=user, role=serializer.validated_data['role']) for team in teams
+            ])
+        return Response({'user': UserPublicSerializer(user).data,
+                         'memberships': [{'team_slug': t.slug, 'role': serializer.validated_data['role']} for t in teams]},
                         status=status.HTTP_201_CREATED)
 
 

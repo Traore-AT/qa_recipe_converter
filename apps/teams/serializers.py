@@ -130,6 +130,23 @@ class UpdateMemberRoleSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=TeamMember.Role.choices)
 
 
+class OwnerCreateMemberSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(min_length=8, write_only=True)
+    role = serializers.ChoiceField(choices=[(r, label) for r, label in TeamMember.Role.choices if r != 'owner'])
+    team_slugs = serializers.ListField(child=serializers.SlugField(), allow_empty=False)
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Ce nom d'utilisateur est déjà pris.")
+        return value
+
+    def validate_team_slugs(self, value):
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError('Une équipe apparaît plusieurs fois.')
+        return value
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PROJECT
 # ─────────────────────────────────────────────────────────────────────────────

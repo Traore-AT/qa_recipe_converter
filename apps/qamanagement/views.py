@@ -148,6 +148,7 @@ class SprintBoardView(APIView):
         return Response({
             'sprint': SprintSerializer(sprint, context={'request': request}).data,
             'columns': columns,
+            'tickets': DefectSerializer(Defect.objects.filter(project=project, sprint=sprint).select_related('reported_by', 'assigned_to', 'use_case'), many=True, context={'request': request}).data,
             'stats': sprint.stats,
         })
 
@@ -389,6 +390,12 @@ class DefectListCreateView(APIView):
         assigned_f = request.query_params.get('assigned_to')
         if assigned_f:
             defects = defects.filter(assigned_to_id=assigned_f)
+        sprint_f = request.query_params.get('sprint')
+        if sprint_f:
+            defects = defects.filter(sprint_id=sprint_f)
+        ticket_f = request.query_params.get('ticket')
+        if ticket_f:
+            defects = defects.filter(ticket_number__iexact=ticket_f.strip())
 
         s = DefectSerializer(defects, many=True, context={'request': request})
         return Response({'results': s.data, 'count': len(s.data)})
@@ -397,6 +404,12 @@ class DefectListCreateView(APIView):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         s = DefectCreateSerializer(data=request.data, context={'request': request})
         if s.is_valid():
+            sprint = s.validated_data.get('sprint')
+            if sprint and sprint.project_id != project.id:
+                return Response({'sprint': ['Le sprint doit appartenir à ce projet.']}, status=status.HTTP_400_BAD_REQUEST)
+            assigned_to = s.validated_data.get('assigned_to')
+            if assigned_to and not ProjectMember.objects.filter(project=project, user=assigned_to).exists():
+                return Response({'assigned_to': ['Cet utilisateur ne fait pas partie du projet.']}, status=status.HTTP_400_BAD_REQUEST)
             defect = s.save(project=project, reported_by=request.user)
             _log_activity(project, team, request.user, 'defect_created',
                           f'Anomalie signalée : {defect.title} ({defect.get_severity_display()})',
@@ -421,15 +434,20 @@ class DefectDetailView(APIView):
 
     def patch(self, request, slug, project_slug, defect_id):
         team, project, defect = self._get_defect(slug, project_slug, defect_id, request.user)
-        allowed = ['title', 'description', 'severity', 'priority', 'status',
+        allowed = ['title', 'description', 'severity', 'priority', 'status', 'sprint',
                    'steps_to_reproduce', 'expected_behavior',
                    'actual_behavior', 'environment']
         old_status = defect.status
         for field in allowed:
             if field in request.data:
-                setattr(defect, field, request.data[field])
+                if field == 'sprint':
+                    sprint_id = request.data[field]
+                    defect.sprint = get_object_or_404(Sprint, id=sprint_id, project=project) if sprint_id else None
+                else:
+                    setattr(defect, field, request.data[field])
         if 'assigned_to' in request.data:
-            defect.assigned_to_id = request.data['assigned_to']
+            assigned_id = request.data['assigned_to']
+            defect.assigned_to_id = assigned_id or None
         if 'attachment' in request.FILES:
             defect.attachment = request.FILES['attachment']
         defect.save()
