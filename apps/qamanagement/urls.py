@@ -11,6 +11,10 @@ urlpatterns = [
          views.SprintDetailView.as_view(), name='sprint-detail'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/board/',
          views.SprintBoardView.as_view(), name='sprint-board'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/',
+         views.SprintTicketListCreateView.as_view(), name='sprint-ticket-list'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/<uuid:ticket_id>/',
+         views.SprintTicketDetailView.as_view(), name='sprint-ticket-detail'),
 
     # ── Use Case Assignments ─────────────────────────────────────────────────
     path('teams/<slug:slug>/projects/<slug:project_slug>/assignments/',
