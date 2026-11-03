@@ -22,10 +22,11 @@ class ExtractedUseCaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExtractedUseCase
         fields = [
-            'id', 'order', 'use_case_text', 'description', 'preconditions',
+            'id', 'order', 'case_number', 'ticket_number', 'use_case_text', 'description', 'preconditions',
             'steps', 'expected_results', 'observed_results', 'is_automated', 'status',
             'jira_ticket', 'comments'
         ]
+        read_only_fields = ['case_number', 'ticket_number']
 
     def get_comments(self, obj):
         comments = obj.comments.all().order_by('created_at')

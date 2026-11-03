@@ -241,6 +241,8 @@ class ExtractedUseCaseSerializerBasic(serializers.Serializer):
     """Lightweight UC serializer for progress views."""
     id = serializers.UUIDField()
     order = serializers.IntegerField()
+    case_number = serializers.IntegerField()
+    ticket_number = serializers.CharField()
     use_case_text = serializers.CharField()
     description = serializers.CharField()
     status = serializers.CharField()

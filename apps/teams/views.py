@@ -700,7 +700,7 @@ class ProjectProgressView(APIView):
         if not can_view_project(request.user, project):
             return Response({'error': 'Accès refusé.'}, status=status.HTTP_403_FORBIDDEN)
 
-        ucs = ExtractedUseCase.objects.filter(job__project=project).order_by('order')
+        ucs = ExtractedUseCase.objects.filter(project=project).order_by('case_number')
         statuses = ['À tester', 'En cours', 'Passé', 'Échoué', 'Bloqué']
         status_counts = {s: ucs.filter(status=s).count() for s in statuses}
         status_counts['total'] = ucs.count()

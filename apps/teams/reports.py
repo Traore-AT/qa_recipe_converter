@@ -23,7 +23,7 @@ def _get_progress_data(team: Team):
     project_list = []
 
     for p in projects:
-        ucs = ExtractedUseCase.objects.filter(job__project=p)
+        ucs = ExtractedUseCase.objects.filter(project=p)
         stats = p.stats
         total_ucs += stats['total']
         completed_ucs += stats['passed']
@@ -34,7 +34,7 @@ def _get_progress_data(team: Team):
             'status': p.status,
             'get_status_display': p.get_status_display(),
             'stats': stats,
-            'use_cases': list(ucs.values('order', 'use_case_text', 'description', 'status', 'is_automated')[:50]),
+            'use_cases': list(ucs.values('case_number', 'use_case_text', 'description', 'status', 'is_automated')[:50]),
             'members': list(p.members.select_related('user').all()),
         })
 

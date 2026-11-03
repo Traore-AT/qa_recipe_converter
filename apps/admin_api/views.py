@@ -476,8 +476,8 @@ class AdminUseCaseListView(ListAPIView):
     serializer_class = AdminUseCaseSerializer
 
     def get_queryset(self):
-        qs = ExtractedUseCase.objects.select_related('job__project__team')\
-            .order_by('-job__created_at', 'order')
+        qs = ExtractedUseCase.objects.select_related('project__team', 'job')\
+            .order_by('-job__created_at', 'case_number')
         query = self.request.query_params.get('search', '').strip()
         if query:
             qs = qs.filter(Q(use_case_text__icontains=query) | Q(description__icontains=query))
@@ -489,7 +489,7 @@ class AdminUseCaseListView(ListAPIView):
             qs = qs.filter(is_automated=automated == 'true')
         project_id = self.request.query_params.get('project', '').strip()
         if project_id:
-            qs = qs.filter(job__project_id=project_id)
+            qs = qs.filter(project_id=project_id)
         return qs
 
 

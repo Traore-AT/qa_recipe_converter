@@ -203,9 +203,9 @@ class Project(models.Model):
 
     @property
     def stats(self):
-        """Compute UC stats from linked ConversionJobs."""
+        """Compute case statistics for the project, including Kanban-created cases."""
         from apps.core.models import ExtractedUseCase
-        ucs = ExtractedUseCase.objects.filter(job__project=self)
+        ucs = ExtractedUseCase.objects.filter(project=self)
         total    = ucs.count()
         passed   = ucs.filter(status='Passé').count()
         failed   = ucs.filter(status='Échoué').count()

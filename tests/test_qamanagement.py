@@ -20,7 +20,7 @@ from rest_framework import status
 from apps.core.models import ConversionJob, ExtractedUseCase
 from apps.teams.models import Team, TeamMember, TeamInvitation, Project, ProjectMember
 from apps.qamanagement.models import (
-    Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment
+    Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment
 )
 
 
@@ -182,10 +182,12 @@ class TestSprintModel:
     def test_sprint_stats_with_assignments(self, db, sprint, done_job, tester_pm, owner):
         ucs = done_job[1]
         for i, uc in enumerate(ucs):
+            uc.status = 'Passé' if i < 3 else 'Échoué' if i == 3 else 'À tester'
+            uc.save(update_fields=['status'])
             UseCaseAssignment.objects.create(
                 use_case=uc, sprint=sprint,
                 assigned_to=tester_pm, assigned_by=owner,
-                status='Passé' if i < 3 else 'Échoué' if i == 3 else 'À tester',
+                status=uc.status,
             )
         stats = sprint.stats
         assert stats['total'] == 5
@@ -426,19 +428,44 @@ class TestSprintTicketAPI:
         }, format='json')
         assert created.status_code == status.HTTP_201_CREATED
         ticket_id = created.data['id']
-        assert created.data['ticket_number'].startswith('TKT-')
+        assert created.data['ticket_number'].startswith('CAS-')
         assert created.data['assigned_to_user']['id'] == tester_pm.user_id
-        search = client.get(list_url, {'ticket': created.data['ticket_number'][-4:]})
+        search = client.get(list_url, {'ticket': created.data['ticket_number']})
         assert search.data['count'] == 1
         detail_url = reverse('qamanagement:sprint-ticket-detail', args=[team.slug, project.slug, sprint.id, ticket_id])
-        updated = client.patch(detail_url, {'status': 'En cours', 'title': 'Cas mis à jour'}, format='json')
+        updated = client.patch(detail_url, {'status': 'En cours', 'use_case_text': 'Cas mis à jour'}, format='json')
         assert updated.status_code == status.HTTP_200_OK
         assert updated.data['status'] == 'En cours'
         board = client.get(reverse('qamanagement:sprint-board', args=[team.slug, project.slug, sprint.id]))
-        assert board.data['tickets'][0]['id'] == ticket_id
+        assert board.data['columns']['En cours'][0]['id'] == ticket_id
         assert board.data['stats']['total'] == 1
         assert board.data['stats']['in_progress'] == 1
         assert client.delete(detail_url).status_code == status.HTTP_204_NO_CONTENT
+
+    def test_ticket_has_full_case_fields_number_and_comments(self, client, team, project, sprint, owner):
+        client.force_authenticate(owner)
+        url = reverse('qamanagement:sprint-case-list', args=[team.slug, project.slug, sprint.id])
+        response = client.post(url, {
+            'use_case_text': 'Connexion utilisateur', 'jira_ticket': 'QA-47',
+            'description': 'Vérifier la connexion', 'preconditions': 'Compte actif',
+            'steps': 'Saisir les identifiants', 'expected_results': 'Session ouverte',
+            'observed_results': 'À exécuter', 'status': 'En cours', 'comment': 'Prévoir un compte valide',
+        }, format='json')
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data['case_number'] == 1
+        assert response.data['jira_ticket'] == 'QA-47'
+        canonical_case = ExtractedUseCase.objects.get(pk=response.data['use_case'])
+        assert canonical_case.job is None
+        assert canonical_case.project == project
+        assert canonical_case.ticket_number == 'CAS-001'
+        assert canonical_case.comments.get().content == 'Prévoir un compte valide'
+        ticket_id = response.data['id']
+        comment_url = reverse('qamanagement:sprint-case-comments', args=[team.slug, project.slug, sprint.id, ticket_id])
+        comment = client.post(comment_url, {'content': 'Précision pour le test'}, format='json')
+        assert comment.status_code == status.HTTP_201_CREATED
+        assert {item['content'] for item in client.get(comment_url).data['results']} == {
+            'Prévoir un compte valide', 'Précision pour le test',
+        }
 
     def test_ticket_creation_requires_project_manager(self, client, team, project, sprint, tester_user):
         client.force_authenticate(tester_user)
@@ -514,6 +541,35 @@ class TestAssignmentAPI:
         resp = client.get(url)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.data['count'] == 4  # 5 total - 1 assigned
+
+    def test_edit_and_delete_imported_case_updates_recipe_and_all_sprints(self, client, team, project, sprint, done_job, assignment, owner, lead_pm):
+        client.force_authenticate(owner)
+        other_sprint = Sprint.objects.create(
+            project=project, name='Sprint 2', start_date=date.today(),
+            end_date=date.today() + timedelta(days=7), created_by=owner,
+        )
+        other_copy = UseCaseAssignment.objects.create(
+            use_case=assignment.use_case, sprint=other_sprint, assigned_to=lead_pm, assigned_by=owner,
+        )
+        url = reverse('qamanagement:assignment-delete', args=[team.slug, project.slug, assignment.id])
+        response = client.patch(url, {
+            'use_case_text': 'Titre sprint modifié', 'jira_ticket': 'QA-99',
+            'description': 'Description sprint', 'preconditions': 'Précondition',
+            'steps': 'Étape', 'expected_results': 'Attendu', 'observed_results': 'Observé',
+            'assigned_to': str(lead_pm.id),
+        }, format='json')
+        assert response.status_code == status.HTTP_200_OK
+        assignment.use_case.refresh_from_db()
+        other_copy.refresh_from_db()
+        assert assignment.use_case.use_case_text == 'Titre sprint modifié'
+        assert assignment.use_case.jira_ticket == 'QA-99'
+        assert other_copy.use_case.use_case_text == 'Titre sprint modifié'
+        assert response.data['use_case_text'] == 'Titre sprint modifié'
+        assert response.data['assigned_to'] == lead_pm.id
+
+        assert client.delete(url).status_code == status.HTTP_204_NO_CONTENT
+        assert not UseCaseAssignment.objects.filter(use_case_id=assignment.use_case_id).exists()
+        assert not assignment.use_case.__class__.objects.filter(pk=assignment.use_case_id).exists()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
