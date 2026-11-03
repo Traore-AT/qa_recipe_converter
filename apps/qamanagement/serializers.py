@@ -1,7 +1,8 @@
 from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
+from apps.core.models import ExtractedUseCase
+from .models import Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
 from apps.teams.serializers import UserPublicSerializer, ProjectSerializer
 from apps.teams.models import ProjectMember
 
@@ -40,29 +41,107 @@ class SprintCreateSerializer(serializers.ModelSerializer):
 
 
 class UseCaseAssignmentSerializer(serializers.ModelSerializer):
-    assigned_to_user   = UserPublicSerializer(source='assigned_to.user', read_only=True)
+    ticket_number       = serializers.SerializerMethodField()
+    assigned_to_user   = serializers.SerializerMethodField()
     assigned_by_user   = UserPublicSerializer(source='assigned_by', read_only=True)
-    use_case_order     = serializers.IntegerField(source='use_case.order', read_only=True)
-    use_case_id_str    = serializers.CharField(source='use_case.use_case_text', read_only=True)
-    use_case_desc      = serializers.CharField(source='use_case.description', read_only=True)
-    jira_ticket        = serializers.CharField(source='use_case.jira_ticket', read_only=True)
+    use_case_order     = serializers.SerializerMethodField()
+    case_number        = serializers.SerializerMethodField()
+    use_case_id_str    = serializers.SerializerMethodField()
+    use_case_desc      = serializers.SerializerMethodField()
+    use_case_text      = serializers.SerializerMethodField()
+    title              = serializers.SerializerMethodField()
+    jira_ticket        = serializers.SerializerMethodField()
+    description        = serializers.SerializerMethodField()
+    preconditions      = serializers.SerializerMethodField()
+    steps              = serializers.SerializerMethodField()
+    expected_results   = serializers.SerializerMethodField()
+    observed_results   = serializers.SerializerMethodField()
     jira_url           = serializers.SerializerMethodField()
 
     class Meta:
         model = UseCaseAssignment
-        fields = ['id', 'use_case', 'use_case_order', 'use_case_id_str', 'use_case_desc',
-                  'jira_ticket', 'jira_url',
-                  'sprint', 'assigned_to', 'assigned_to_user', 'assigned_by',
+        fields = ['id', 'use_case', 'ticket_number', 'use_case_order', 'use_case_id_str', 'use_case_text', 'title', 'use_case_desc',
+                  'jira_ticket', 'description', 'preconditions', 'steps', 'expected_results', 'observed_results', 'jira_url',
+                  'case_number', 'sprint', 'assigned_to', 'assigned_to_user', 'assigned_by',
                   'assigned_by_user', 'assigned_at', 'status']
         read_only_fields = ['id', 'assigned_by', 'assigned_at', 'status']
+
+    status = serializers.CharField(source='use_case.status', read_only=True)
 
     def get_jira_url(self, obj):
         from django.conf import settings
         base = (getattr(settings, 'JIRA_BASE_URL', '') or '').rstrip('/')
-        ticket = (obj.use_case.jira_ticket or '').strip()
+        ticket = (self.get_jira_ticket(obj) or '').strip()
         if base and ticket:
             return f'{base}/browse/{ticket}'
         return None
+
+    def get_assigned_to_user(self, obj):
+        return UserPublicSerializer(obj.assigned_to.user).data if obj.assigned_to_id else None
+
+    def _case_field(self, obj, source): return getattr(obj.use_case, source)
+    def get_use_case_order(self, obj): return obj.use_case.case_number
+    def get_case_number(self, obj): return obj.use_case.case_number
+    def get_ticket_number(self, obj): return obj.use_case.ticket_number
+    def get_use_case_id_str(self, obj): return self._case_field(obj, 'use_case_text')
+    def get_use_case_text(self, obj): return self.get_use_case_id_str(obj)
+    def get_title(self, obj): return self.get_use_case_text(obj)
+    def get_use_case_desc(self, obj): return self._case_field(obj, 'description')
+    def get_jira_ticket(self, obj): return self._case_field(obj, 'jira_ticket')
+    def get_description(self, obj): return self.get_use_case_desc(obj)
+    def get_preconditions(self, obj): return self._case_field(obj, 'preconditions')
+    def get_steps(self, obj): return self._case_field(obj, 'steps')
+    def get_expected_results(self, obj): return self._case_field(obj, 'expected_results')
+    def get_observed_results(self, obj): return self._case_field(obj, 'observed_results')
+
+
+class SprintCaseUpdateSerializer(serializers.ModelSerializer):
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=ProjectMember.objects.select_related('project'), required=False, allow_null=True
+    )
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=ProjectMember.objects.select_related('project'), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = ExtractedUseCase
+        fields = ['use_case_text', 'jira_ticket', 'description', 'preconditions', 'steps',
+                  'expected_results', 'observed_results', 'status', 'assigned_to']
+
+    def validate_status(self, value):
+        valid = [choice for choice, _ in ExtractedUseCase.UCStatus.choices]
+        if value not in valid:
+            raise serializers.ValidationError(f"Statut invalide. Valeurs : {', '.join(valid)}")
+        return value
+
+    def validate(self, attrs):
+        legacy_title = self.initial_data.get('title') if hasattr(self, 'initial_data') else None
+        if legacy_title is not None and 'use_case_text' not in attrs:
+            attrs['use_case_text'] = legacy_title
+        return attrs
+
+    def validate_assigned_to(self, value):
+        project = self.instance.project
+        if value and value.project_id != project.id:
+            raise serializers.ValidationError('Le membre assigné doit appartenir à ce projet.')
+        return value
+
+    def update(self, instance, validated_data):
+        assigned_to = validated_data.pop('assigned_to', serializers.empty)
+        case = super().update(instance, validated_data)
+        if 'status' in validated_data:
+            UseCaseAssignment.objects.filter(use_case=case).update(status=case.status)
+        assignment = self.context.get('assignment')
+        if assigned_to is not serializers.empty and assignment:
+            siblings = UseCaseAssignment.objects.filter(use_case=case, sprint=assignment.sprint)
+            if assigned_to is None:
+                siblings.exclude(pk=assignment.pk).delete()
+                assignment.assigned_to = None
+                assignment.save(update_fields=['assigned_to'])
+            else:
+                assignment.assigned_to = assigned_to
+                assignment.save(update_fields=['assigned_to'])
+        return case
 
 
 class CreateAssignmentSerializer(serializers.Serializer):
@@ -110,24 +189,37 @@ class DefectCreateSerializer(serializers.ModelSerializer):
                   'actual_behavior', 'environment', 'attachment']
 
 
-class SprintTicketSerializer(serializers.ModelSerializer):
-    assigned_to_user = UserPublicSerializer(source='assigned_to.user', read_only=True)
-    created_by_user = UserPublicSerializer(source='created_by', read_only=True)
+class SprintCaseCreateSerializer(serializers.ModelSerializer):
     assigned_to = serializers.PrimaryKeyRelatedField(
         queryset=ProjectMember.objects.select_related('project'), required=False, allow_null=True
     )
+    use_case_text = serializers.CharField(required=False, allow_blank=True)
+    comment = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     class Meta:
-        model = SprintTicket
-        fields = ['id', 'ticket_number', 'sprint', 'title', 'description', 'status', 'priority',
-                  'assigned_to', 'assigned_to_user', 'created_by', 'created_by_user', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'ticket_number', 'sprint', 'created_by', 'created_by_user', 'created_at', 'updated_at']
+        model = ExtractedUseCase
+        fields = ['use_case_text', 'jira_ticket', 'description', 'preconditions', 'steps', 'expected_results',
+                  'observed_results', 'status', 'assigned_to', 'comment']
+        read_only_fields = []
 
     def validate_assigned_to(self, value):
-        sprint = self.context.get('sprint')
-        if value and sprint and value.project_id != sprint.project_id:
+        project = self.context.get('project')
+        if value and project and value.project_id != project.id:
             raise serializers.ValidationError('Le membre assigné doit appartenir au projet du sprint.')
         return value
+
+    def validate_status(self, value):
+        if value not in [choice for choice, _ in ExtractedUseCase.UCStatus.choices]:
+            raise serializers.ValidationError('Statut de cas invalide.')
+        return value
+
+    def validate(self, attrs):
+        legacy_title = self.initial_data.get('title') if hasattr(self, 'initial_data') else None
+        if legacy_title is not None and not attrs.get('use_case_text'):
+            attrs['use_case_text'] = legacy_title
+        if self.instance is None and not (attrs.get('use_case_text') or '').strip():
+            raise serializers.ValidationError({'use_case_text': 'Le titre du cas est obligatoire.'})
+        return attrs
 
 
 class WeeklyReportSerializer(serializers.ModelSerializer):

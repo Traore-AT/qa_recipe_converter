@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from apps.teams.models import Team, TeamMember, TeamInvitation, Project, ProjectMember
+from apps.core.models import ExtractedUseCase
 from apps.teams.permissions import (
     can_view_project, can_write_project, can_manage_project, can_manage_team
 )
@@ -140,6 +141,25 @@ class TestProjectModel:
     def test_str(self, team_project, team):
         assert 'Alpha QA Team' in str(team_project)
         assert 'Team Sprint' in str(team_project)
+
+
+class TestTeamDashboard:
+    def test_dashboard_counts_cases_created_without_conversion_job(
+        self, db, client, owner, team, team_project
+    ):
+        ExtractedUseCase.objects.create(
+            project=team_project,
+            use_case_text='Cas créé depuis le Kanban',
+            status=ExtractedUseCase.UCStatus.PASSED,
+        )
+        auth(client, owner)
+
+        response = client.get(reverse('teams:team-dashboard', args=[team.slug]))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['stats']['use_cases_total'] == 1
+        assert response.data['stats']['use_cases_passed'] == 1
+        assert response.data['stats']['success_rate'] == 100
 
 
 # ─────────────────────────────────────────────────────────────────────────────

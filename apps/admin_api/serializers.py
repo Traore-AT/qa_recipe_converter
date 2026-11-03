@@ -195,7 +195,7 @@ class AdminUseCaseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = ExtractedUseCase
-        fields = ['id', 'order', 'use_case_text', 'description', 'status',
+        fields = ['id', 'order', 'case_number', 'ticket_number', 'use_case_text', 'description', 'status',
                   'is_automated', 'job', 'source_filename',
                   'project_id', 'project_name', 'team_name', 'assigned_users']
         read_only_fields = fields
@@ -204,14 +204,14 @@ class AdminUseCaseSerializer(serializers.ModelSerializer):
         return obj.job.source_filename if obj.job_id else None
 
     def get_project_id(self, obj):
-        return obj.job.project_id if obj.job_id else None
+        return obj.project_id
 
     def get_project_name(self, obj):
-        return obj.job.project.name if obj.job_id and obj.job.project_id else None
+        return obj.project.name if obj.project_id else None
 
     def get_team_name(self, obj):
-        if obj.job_id and obj.job.project_id and obj.job.project.team_id:
-            return obj.job.project.team.name
+        if obj.project_id and obj.project.team_id:
+            return obj.project.team.name
         return None
 
     def get_assigned_users(self, obj):

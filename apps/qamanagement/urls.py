@@ -11,10 +11,19 @@ urlpatterns = [
          views.SprintDetailView.as_view(), name='sprint-detail'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/board/',
          views.SprintBoardView.as_view(), name='sprint-board'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/cases/',
+         views.SprintCaseListCreateView.as_view(), name='sprint-case-list'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/cases/<uuid:ticket_id>/',
+         views.SprintCaseDetailView.as_view(), name='sprint-case-detail'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/cases/<uuid:ticket_id>/comments/',
+         views.SprintCaseCommentListCreateView.as_view(), name='sprint-case-comments'),
+    # Compatibility paths point to the same canonical case records.
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/',
-         views.SprintTicketListCreateView.as_view(), name='sprint-ticket-list'),
+         views.SprintCaseListCreateView.as_view(), name='sprint-ticket-list'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/<uuid:ticket_id>/',
-         views.SprintTicketDetailView.as_view(), name='sprint-ticket-detail'),
+         views.SprintCaseDetailView.as_view(), name='sprint-ticket-detail'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/<uuid:ticket_id>/comments/',
+         views.SprintCaseCommentListCreateView.as_view(), name='sprint-ticket-comments'),
 
     # ── Use Case Assignments ─────────────────────────────────────────────────
     path('teams/<slug:slug>/projects/<slug:project_slug>/assignments/',

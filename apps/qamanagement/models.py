@@ -37,13 +37,12 @@ class Sprint(models.Model):
     @property
     def stats(self):
         assignments = UseCaseAssignment.objects.filter(sprint=self)
-        tickets = SprintTicket.objects.filter(sprint=self)
-        total = assignments.count() + tickets.count()
-        passed = assignments.filter(status='Passé').count() + tickets.filter(status=SprintTicket.Status.DONE).count()
-        failed = assignments.filter(status='Échoué').count() + tickets.filter(status=SprintTicket.Status.FAILED).count()
-        blocked = assignments.filter(status='Bloqué').count() + tickets.filter(status=SprintTicket.Status.BLOCKED).count()
-        in_progress = assignments.filter(status='En cours').count() + tickets.filter(status=SprintTicket.Status.IN_PROGRESS).count()
-        not_run = assignments.filter(status='À tester').count() + tickets.filter(status=SprintTicket.Status.TODO).count()
+        total = assignments.values('use_case_id').distinct().count()
+        passed = assignments.filter(use_case__status='Passé').values('use_case_id').distinct().count()
+        failed = assignments.filter(use_case__status='Échoué').values('use_case_id').distinct().count()
+        blocked = assignments.filter(use_case__status='Bloqué').values('use_case_id').distinct().count()
+        in_progress = assignments.filter(use_case__status='En cours').values('use_case_id').distinct().count()
+        not_run = assignments.filter(use_case__status='À tester').values('use_case_id').distinct().count()
         return {
             'total': total,
             'passed': passed,
@@ -59,59 +58,24 @@ class UseCaseAssignment(models.Model):
     id           = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     use_case     = models.ForeignKey('core.ExtractedUseCase', on_delete=models.CASCADE, related_name='assignments')
     sprint       = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='assignments')
-    assigned_to  = models.ForeignKey('teams.ProjectMember', on_delete=models.CASCADE, related_name='uc_assignments')
+    assigned_to  = models.ForeignKey('teams.ProjectMember', on_delete=models.CASCADE, null=True, blank=True, related_name='uc_assignments')
     assigned_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_assignments')
     assigned_at  = models.DateTimeField(auto_now_add=True)
-    # Copy of UC status for quick filtering (synced via signal or save)
     status       = models.CharField(max_length=20, default='À tester')
 
     class Meta:
         ordering = ['assigned_at']
-        unique_together = ('use_case', 'assigned_to')
+        constraints = [
+            models.UniqueConstraint(fields=['use_case', 'assigned_to', 'sprint'], name='uniq_case_assignee_sprint'),
+            models.UniqueConstraint(fields=['use_case', 'assigned_to'], condition=models.Q(sprint__isnull=True),
+                                    name='uniq_case_assignee_without_sprint'),
+        ]
         verbose_name = 'Affectation de cas'
         verbose_name_plural = 'Affectations de cas'
 
     def __str__(self):
-        return f'{self.assigned_to.user.username} → UC#{self.use_case.order}'
-
-
-class SprintTicket(models.Model):
-    """Standalone work item managed directly on a sprint's Kanban board."""
-
-    class Status(models.TextChoices):
-        TODO = 'À tester', 'À tester'
-        IN_PROGRESS = 'En cours', 'En cours'
-        DONE = 'Passé', 'Passé'
-        FAILED = 'Échoué', 'Échoué'
-        BLOCKED = 'Bloqué', 'Bloqué'
-
-    class Priority(models.TextChoices):
-        LOW = 'low', 'Basse'
-        MEDIUM = 'medium', 'Moyenne'
-        HIGH = 'high', 'Haute'
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    ticket_number = models.CharField(max_length=20, unique=True)
-    sprint = models.ForeignKey(Sprint, on_delete=models.CASCADE, related_name='tickets')
-    title = models.CharField(max_length=300)
-    description = models.TextField(blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.TODO)
-    priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.MEDIUM)
-    assigned_to = models.ForeignKey('teams.ProjectMember', on_delete=models.SET_NULL, null=True, blank=True, related_name='sprint_tickets')
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_sprint_tickets')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['created_at']
-
-    def save(self, *args, **kwargs):
-        if not self.ticket_number:
-            self.ticket_number = f'TKT-{self.pk.hex[:8].upper()}'
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f'{self.ticket_number} — {self.title}'
+        assignee = self.assigned_to.user.username if self.assigned_to_id else 'Non assigné'
+        return f'{assignee} → CAS-{self.use_case.case_number:03d}'
 
 
 class Defect(models.Model):

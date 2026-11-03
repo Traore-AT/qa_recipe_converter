@@ -3,6 +3,7 @@ import io
 import logging
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -13,7 +14,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
+from .models import Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
 from .serializers import (
     SprintSerializer, SprintCreateSerializer,
     UseCaseAssignmentSerializer, CreateAssignmentSerializer,
@@ -22,11 +23,11 @@ from .serializers import (
     ActivityLogSerializer, UseCaseCommentSerializer,
     MemberProgressSerializer, SprintBoardSerializer, DefectStatsSerializer,
     UseCaseScreenshotSerializer,
-    SprintTicketSerializer,
+    SprintCaseCreateSerializer, SprintCaseUpdateSerializer,
 )
 from apps.teams.models import Team, Project, ProjectMember, TeamMember
 from apps.teams.permissions import can_view_project, can_manage_project, can_write_project
-from apps.core.models import ExtractedUseCase
+from apps.core.models import ConversionJob, ExtractedUseCase
 from apps.teams.serializers import UserPublicSerializer, ProjectSerializer
 
 logger = logging.getLogger(__name__)
@@ -142,19 +143,19 @@ class SprintBoardView(APIView):
             'Bloqué': [],
         }
         for a in assignments:
-            status_key = a.status
+            status_key = a.use_case.status
             if status_key not in columns:
                 status_key = 'À tester'
             columns[status_key].append(UseCaseAssignmentSerializer(a, context={'request': request}).data)
         return Response({
             'sprint': SprintSerializer(sprint, context={'request': request}).data,
             'columns': columns,
-            'tickets': SprintTicketSerializer(SprintTicket.objects.filter(sprint=sprint).select_related('assigned_to__user', 'created_by'), many=True, context={'request': request, 'sprint': sprint}).data,
+            'tickets': [],
             'stats': sprint.stats,
         })
 
 
-class SprintTicketListCreateView(APIView):
+class SprintCaseListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
 
@@ -164,11 +165,15 @@ class SprintTicketListCreateView(APIView):
 
     def get(self, request, slug, project_slug, sprint_id):
         sprint = self._get_sprint(slug, project_slug, sprint_id, request.user)
-        tickets = SprintTicket.objects.filter(sprint=sprint).select_related('assigned_to__user', 'created_by')
+        assignments = UseCaseAssignment.objects.filter(sprint=sprint).select_related('use_case', 'assigned_to__user', 'assigned_by')
         search = request.query_params.get('ticket', '').strip()
         if search:
-            tickets = tickets.filter(ticket_number__icontains=search)
-        data = SprintTicketSerializer(tickets, many=True, context={'request': request, 'sprint': sprint}).data
+            number = search.upper().removeprefix('CAS-').strip()
+            if number.isdigit():
+                assignments = assignments.filter(Q(use_case__case_number=int(number)) | Q(use_case__jira_ticket__icontains=search) | Q(use_case__ticket_number__icontains=search))
+            else:
+                assignments = assignments.filter(Q(use_case__ticket_number__icontains=search) | Q(use_case__jira_ticket__icontains=search))
+        data = UseCaseAssignmentSerializer(assignments, many=True, context={'request': request}).data
         return Response({'results': data, 'count': len(data)})
 
     def post(self, request, slug, project_slug, sprint_id):
@@ -176,43 +181,84 @@ class SprintTicketListCreateView(APIView):
         if not can_manage_project(request.user, project):
             return Response({'error': 'Seuls les responsables du projet peuvent créer des tickets.'}, status=status.HTTP_403_FORBIDDEN)
         sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
-        serializer = SprintTicketSerializer(data=request.data, context={'request': request, 'sprint': sprint})
+        serializer = SprintCaseCreateSerializer(data=request.data, context={'request': request, 'project': project})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        ticket = serializer.save(sprint=sprint, created_by=request.user)
-        _log_activity(project, team, request.user, 'sprint_ticket_created',
-                      f'Ticket {ticket.ticket_number} créé dans le sprint « {sprint.name} ».')
-        return Response(SprintTicketSerializer(ticket, context={'request': request, 'sprint': sprint}).data,
+        with transaction.atomic():
+            assigned_to = serializer.validated_data.pop('assigned_to', None)
+            initial_comment = serializer.validated_data.pop('comment', '').strip()
+            case = serializer.save(project=project, order=0)
+            assignment = UseCaseAssignment.objects.create(
+                use_case=case, sprint=sprint, assigned_to=assigned_to,
+                assigned_by=request.user, status=case.status)
+            if initial_comment:
+                UseCaseComment.objects.create(use_case=case, author=request.user, content=initial_comment)
+        _log_activity(project, team, request.user, 'use_case_created',
+                      f'CAS-{case.case_number:03d} créé dans le sprint « {sprint.name} ».')
+        return Response(UseCaseAssignmentSerializer(assignment, context={'request': request}).data,
                         status=status.HTTP_201_CREATED)
 
 
-class SprintTicketDetailView(APIView):
+class SprintCaseDetailView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
 
     def _get_ticket(self, slug, project_slug, sprint_id, ticket_id, user):
         _, project = _get_team_and_project(slug, project_slug, user)
         sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
-        ticket = get_object_or_404(SprintTicket, id=ticket_id, sprint=sprint)
-        return project, sprint, ticket
+        assignment = get_object_or_404(UseCaseAssignment.objects.select_related('use_case', 'assigned_to__user'),
+                                       Q(use_case_id=ticket_id) | Q(id=ticket_id), sprint=sprint)
+        return project, sprint, assignment
 
     def patch(self, request, slug, project_slug, sprint_id, ticket_id):
-        project, sprint, ticket = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        project, sprint, assignment = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
-        serializer = SprintTicketSerializer(ticket, data=request.data, partial=True,
-                                            context={'request': request, 'sprint': sprint})
+        serializer = SprintCaseUpdateSerializer(assignment.use_case, data=request.data, partial=True,
+                                                context={'request': request, 'project': project, 'assignment': assignment})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        ticket = serializer.save()
-        return Response(SprintTicketSerializer(ticket, context={'request': request, 'sprint': sprint}).data)
+        serializer.save()
+        assignment.refresh_from_db()
+        return Response(UseCaseAssignmentSerializer(assignment, context={'request': request}).data)
 
     def delete(self, request, slug, project_slug, sprint_id, ticket_id):
-        project, _, ticket = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        project, _, assignment = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
-        ticket.delete()
+        case = assignment.use_case
+        job_id = case.job_id
+        with transaction.atomic():
+            case.delete()
+            if job_id:
+                job = ConversionJob.objects.select_for_update().get(pk=job_id)
+                job.use_cases_count = job.use_cases.count()
+                job.save(update_fields=['use_cases_count'])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SprintCaseCommentListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _ticket(self, slug, project_slug, sprint_id, ticket_id, user):
+        _, project = _get_team_and_project(slug, project_slug, user)
+        sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
+        return get_object_or_404(UseCaseAssignment, Q(use_case_id=ticket_id) | Q(id=ticket_id), sprint=sprint)
+
+    def get(self, request, slug, project_slug, sprint_id, ticket_id):
+        assignment = self._ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        comments = UseCaseComment.objects.filter(use_case=assignment.use_case).select_related('author')
+        return Response({'results': UseCaseCommentSerializer(comments, many=True, context={'request': request}).data,
+                         'count': comments.count()})
+
+    def post(self, request, slug, project_slug, sprint_id, ticket_id):
+        assignment = self._ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        serializer = UseCaseCommentSerializer(data=request.data, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        comment = serializer.save(use_case=assignment.use_case, author=request.user)
+        return Response(UseCaseCommentSerializer(comment, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,7 +271,7 @@ class AssignmentListCreateView(APIView):
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         assignments = UseCaseAssignment.objects.filter(
-            use_case__job__project=project
+            use_case__project=project
         ).select_related('use_case', 'assigned_to__user', 'assigned_by')
 
         sprint_f = request.query_params.get('sprint')
@@ -266,25 +312,19 @@ class AssignmentListCreateView(APIView):
         if sprint_id:
             sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
 
-        ucs = ExtractedUseCase.objects.filter(id__in=use_case_ids, job__project=project)
+        ucs = ExtractedUseCase.objects.filter(id__in=use_case_ids, project=project)
         created = []
         errors = []
         created_assignments = []
         for uc in ucs:
             assignment, was_created = UseCaseAssignment.objects.get_or_create(
-                use_case=uc,
-                assigned_to=pm,
-                defaults={
-                    'sprint': sprint,
-                    'assigned_by': request.user,
-                    'status': uc.status,
-                }
-            )
+                use_case=uc, assigned_to=pm, sprint=sprint,
+                defaults={'assigned_by': request.user, 'status': uc.status})
             if was_created:
                 created.append(str(uc.id))
                 created_assignments.append(assignment)
             else:
-                errors.append(f'UC#{uc.order} déjà assigné à ce membre')
+                errors.append(f'CAS-{uc.case_number:03d} déjà assigné à ce membre dans ce sprint')
 
         _log_activity(project, team, request.user, 'assignments_created',
                       f'{len(created)} cas assigné(s) à {target_user.username}',
@@ -310,10 +350,39 @@ class AssignmentDeleteView(APIView):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id,
-                                       use_case__job__project=project)
-        assignment.delete()
+        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
+        case = assignment.use_case
+        job_id = case.job_id
+        with transaction.atomic():
+            case.delete()
+            if job_id:
+                job = ConversionJob.objects.select_for_update().get(pk=job_id)
+                job.use_cases_count = job.use_cases.count()
+                job.save(update_fields=['use_cases_count'])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def patch(self, request, slug, project_slug, assignment_id):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        if not can_manage_project(request.user, project):
+            return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
+        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, sprint__project=project,
+                                       use_case__project=project)
+        serializer = SprintCaseUpdateSerializer(
+            assignment.use_case, data=request.data, partial=True,
+            context={'request': request, 'project': project, 'assignment': assignment})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        new_assignee = serializer.validated_data.get('assigned_to', assignment.assigned_to)
+        if new_assignee and UseCaseAssignment.objects.filter(
+                use_case=assignment.use_case, sprint=assignment.sprint, assigned_to=new_assignee
+        ).exclude(pk=assignment.pk).exists():
+            return Response({'assigned_to': ['Ce cas est déjà assigné à ce membre dans ce sprint.']},
+                            status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        assignment.refresh_from_db()
+        assignment.status = assignment.use_case.status
+        assignment.save(update_fields=['status'])
+        return Response(UseCaseAssignmentSerializer(assignment, context={'request': request}).data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -326,7 +395,7 @@ class UseCaseStatusUpdateView(APIView):
 
     def patch(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job__project=project)
+        uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
 
         new_status = request.data.get('status')
         valid_statuses = ['À tester', 'En cours', 'Passé', 'Échoué', 'Bloqué']
@@ -340,7 +409,7 @@ class UseCaseStatusUpdateView(APIView):
         uc.save()
 
         # Sync assigned UC status
-        updated = UseCaseAssignment.objects.filter(use_case=uc, assigned_to__user=request.user).update(status=new_status)
+        UseCaseAssignment.objects.filter(use_case=uc).update(status=new_status)
 
         # Notify project leads
         lead_members = ProjectMember.objects.filter(project=project, role='lead').values_list('user', flat=True)
@@ -385,7 +454,7 @@ class UseCaseJiraUpdateView(APIView):
 
     def patch(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job__project=project)
+        uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
 
         uc.jira_ticket = (request.data.get('jira_ticket') or '').strip()
         uc.save()
@@ -402,14 +471,14 @@ class UseCaseCommentListCreateView(APIView):
 
     def get(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job__project=project)
+        uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
         comments = UseCaseComment.objects.filter(use_case=uc).select_related('author')
         s = UseCaseCommentSerializer(comments, many=True, context={'request': request})
         return Response({'results': s.data, 'count': len(s.data)})
 
     def post(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job__project=project)
+        uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
         s = UseCaseCommentSerializer(data=request.data, context={'request': request})
         if s.is_valid():
             comment = s.save(use_case=uc, author=request.user)
@@ -793,10 +862,13 @@ class UnassignedUseCasesView(APIView):
 
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        all_ucs = ExtractedUseCase.objects.filter(job__project=project)
-        assigned_uc_ids = UseCaseAssignment.objects.filter(
-            use_case__job__project=project
-        ).values_list('use_case_id', flat=True)
+        all_ucs = ExtractedUseCase.objects.filter(project=project)
+        sprint_id = request.query_params.get('sprint')
+        assignments = UseCaseAssignment.objects.filter(use_case__project=project)
+        if sprint_id:
+            get_object_or_404(Sprint, id=sprint_id, project=project)
+            assignments = assignments.filter(sprint_id=sprint_id)
+        assigned_uc_ids = assignments.values_list('use_case_id', flat=True)
         unassigned = all_ucs.exclude(id__in=assigned_uc_ids)
         from apps.teams.serializers import ExtractedUseCaseSerializerBasic
         s = ExtractedUseCaseSerializerBasic(unassigned, many=True)
@@ -812,8 +884,7 @@ class UseCaseDetailView(APIView):
 
     def get(self, request, slug, project_slug, assignment_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id,
-                                       use_case__job__project=project)
+        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
         uc = assignment.use_case
         from apps.api.serializers import ExtractedUseCaseSerializer
         screenshots = UseCaseScreenshot.objects.filter(assignment=assignment)
@@ -836,16 +907,14 @@ class UseCaseScreenshotListCreateView(APIView):
 
     def get(self, request, slug, project_slug, assignment_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id,
-                                       use_case__job__project=project)
+        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
         screenshots = UseCaseScreenshot.objects.filter(assignment=assignment)
         s = UseCaseScreenshotSerializer(screenshots, many=True, context={'request': request})
         return Response({'results': s.data, 'count': len(s.data)})
 
     def post(self, request, slug, project_slug, assignment_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id,
-                                       use_case__job__project=project)
+        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
         image = request.FILES.get('image')
         if not image:
             return Response({'error': 'Image requise.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -868,7 +937,7 @@ class UseCaseScreenshotDeleteView(APIView):
     def delete(self, request, slug, project_slug, assignment_id, screenshot_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         screenshot = get_object_or_404(UseCaseScreenshot, id=screenshot_id,
-                                       assignment__use_case__job__project=project)
+                                       assignment__use_case__project=project)
         screenshot.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -896,16 +965,16 @@ class SprintCSVExportView(APIView):
         for a in assignments:
             uc = a.use_case
             writer.writerow([
-                uc.order,
-                f"UC-{uc.order:03d}",
+                uc.case_number,
+                f"CAS-{uc.case_number:03d}",
                 uc.use_case_text,
                 uc.description,
                 uc.preconditions,
                 uc.steps,
                 uc.expected_results,
                 uc.observed_results,
-                a.assigned_to.user.get_full_name() or a.assigned_to.user.username,
-                a.status,
+                (a.assigned_to.user.get_full_name() or a.assigned_to.user.username) if a.assigned_to_id else 'Non assigné',
+                uc.status,
                 'Oui' if uc.is_automated else 'Non',
             ])
 

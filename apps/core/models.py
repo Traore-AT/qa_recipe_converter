@@ -72,7 +72,10 @@ class ExtractedUseCase(models.Model):
         BLOCKED     = 'Bloqué',   'Bloqué'
 
     id               = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    job              = models.ForeignKey(ConversionJob, on_delete=models.CASCADE, related_name='use_cases')
+    job              = models.ForeignKey(ConversionJob, on_delete=models.CASCADE, related_name='use_cases', null=True, blank=True)
+    project          = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='use_cases')
+    case_number      = models.PositiveIntegerField(default=0)
+    ticket_number    = models.CharField(max_length=32, blank=True, default='')
     order            = models.IntegerField(default=0)
     use_case_text    = models.TextField(blank=True)
     description      = models.TextField(blank=True)
@@ -88,8 +91,29 @@ class ExtractedUseCase(models.Model):
 
     class Meta:
         ordering     = ['order']
+        constraints  = [
+            models.UniqueConstraint(fields=['project', 'case_number'], name='uniq_project_case_number'),
+            models.UniqueConstraint(fields=['project', 'ticket_number'], name='uniq_project_ticket_number'),
+        ]
         verbose_name = 'Use Case extrait'
         verbose_name_plural = 'Use Cases extraits'
 
     def __str__(self):
-        return f"UC {self.order} — {self.use_case_text or 'Sans ID'}"
+        return f"CAS-{self.case_number:03d} — {self.use_case_text or self.description or 'Sans titre'}"
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        if self.job_id and not self.project_id:
+            self.project_id = self.job.project_id
+        if self.project_id and not self.case_number:
+            with transaction.atomic():
+                from apps.teams.models import Project
+                Project.objects.select_for_update().get(pk=self.project_id)
+                last = type(self).objects.filter(project_id=self.project_id).order_by('-case_number').values_list('case_number', flat=True).first() or 0
+                self.case_number = last + 1
+                self.ticket_number = self.ticket_number or f'CAS-{self.case_number:03d}'
+                super().save(*args, **kwargs)
+                return
+        if self.case_number and not self.ticket_number:
+            self.ticket_number = f'CAS-{self.case_number:03d}'
+        super().save(*args, **kwargs)
