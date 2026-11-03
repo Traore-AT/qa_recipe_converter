@@ -62,6 +62,15 @@ class TestWebLoginView:
         assert resp.url == '/teams/alpha-qa-team/'
 
 
+class TestIndexPage:
+    def test_root_page_renders_converter_form(self, client, db):
+        response = client.get('/')
+        assert response.status_code == 200
+        assert 'core/index.html' in [template.name for template in response.templates]
+        assert b'Convertir une recette de test' in response.content
+        assert b'word_file' in response.content
+
+
 class TestWebRegisterView:
     @skip_if_py314
     def test_get_renders_form(self, client):
