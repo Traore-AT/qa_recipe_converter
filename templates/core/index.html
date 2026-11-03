@@ -1,0 +1,91 @@
+{% extends 'base.html' %}
+
+{% block title %}Convertir une recette — QA Recipe Converter{% endblock %}
+
+{% block extra_css %}
+<style>
+    .converter-page { max-width: 920px; margin: 0 auto; }
+    .converter-intro { margin: 0 0 1.5rem; }
+    .converter-intro h1 { color: var(--brand-800); font-size: clamp(1.7rem, 4vw, 2.4rem); line-height: 1.2; }
+    .converter-intro p { color: var(--slate-600); margin-top: .5rem; }
+    .converter-card { background: var(--white); border: 1px solid var(--slate-200); border-radius: var(--radius-xl); box-shadow: var(--shadow-md); padding: clamp(1.1rem, 3vw, 2rem); }
+    .converter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+    .converter-field { display: flex; flex-direction: column; gap: .35rem; }
+    .converter-field label { font-size: .875rem; font-weight: 650; color: var(--slate-700); }
+    .converter-field input { width: 100%; min-height: 44px; padding: .65rem .75rem; border: 1px solid var(--slate-300); border-radius: var(--radius); background: var(--white); color: var(--slate-800); font: inherit; }
+    .converter-field input:focus { outline: 3px solid var(--brand-100); border-color: var(--brand-600); }
+    .converter-field small { color: var(--slate-500); font-size: .78rem; }
+    .converter-field-wide { grid-column: 1 / -1; }
+    .converter-error { color: var(--red-600); font-size: .82rem; }
+    .converter-submit { margin-top: 1.25rem; }
+    .recent-jobs { margin-top: 2rem; }
+    .recent-jobs h2 { color: var(--brand-800); font-size: 1.2rem; margin-bottom: .75rem; }
+    .recent-job { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .9rem 1rem; border-bottom: 1px solid var(--slate-100); }
+    .recent-job:last-child { border-bottom: 0; }
+    .recent-job a { color: var(--brand-700); font-weight: 600; text-decoration: none; }
+    .recent-job a:hover { text-decoration: underline; }
+    .recent-job-date { color: var(--slate-500); font-size: .82rem; }
+    @media (max-width: 640px) { .converter-grid { grid-template-columns: 1fr; } .converter-field-wide { grid-column: auto; } .recent-job { align-items: flex-start; flex-direction: column; gap: .25rem; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="converter-page" aria-labelledby="converter-title">
+    <header class="converter-intro">
+        <h1 id="converter-title">Convertir une recette de test</h1>
+        <p>Importez un document Word pour extraire ses cas de test et préparer un classeur Excel.</p>
+    </header>
+
+    <form class="converter-card" method="post" enctype="multipart/form-data" novalidate>
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+            <div class="alert alert-error" role="alert">{{ form.non_field_errors }}</div>
+        {% endif %}
+        <div class="converter-grid">
+            <div class="converter-field converter-field-wide">
+                <label for="{{ form.word_file.id_for_label }}">{{ form.word_file.label }} *</label>
+                {{ form.word_file }}
+                {% if form.word_file.help_text %}<small>{{ form.word_file.help_text }}</small>{% endif %}
+                {% for error in form.word_file.errors %}<span class="converter-error" role="alert">{{ error }}</span>{% endfor %}
+            </div>
+            <div class="converter-field converter-field-wide">
+                <label for="{{ form.excel_template.id_for_label }}">{{ form.excel_template.label }}</label>
+                {{ form.excel_template }}
+                {% if form.excel_template.help_text %}<small>{{ form.excel_template.help_text }}</small>{% endif %}
+                {% for error in form.excel_template.errors %}<span class="converter-error" role="alert">{{ error }}</span>{% endfor %}
+            </div>
+            <div class="converter-field">
+                <label for="{{ form.company_name.id_for_label }}">{{ form.company_name.label }}</label>
+                {{ form.company_name }}
+                {% for error in form.company_name.errors %}<span class="converter-error" role="alert">{{ error }}</span>{% endfor %}
+            </div>
+            <div class="converter-field">
+                <label for="{{ form.excel_filename.id_for_label }}">{{ form.excel_filename.label }}</label>
+                {{ form.excel_filename }}
+                {% for error in form.excel_filename.errors %}<span class="converter-error" role="alert">{{ error }}</span>{% endfor %}
+            </div>
+            <div class="converter-field converter-field-wide">
+                <label for="{{ form.company_logo.id_for_label }}">{{ form.company_logo.label }}</label>
+                {{ form.company_logo }}
+                {% if form.company_logo.help_text %}<small>{{ form.company_logo.help_text }}</small>{% endif %}
+                {% for error in form.company_logo.errors %}<span class="converter-error" role="alert">{{ error }}</span>{% endfor %}
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary converter-submit">📄 Importer et analyser le document</button>
+    </form>
+
+    {% if recent_jobs %}
+    <section class="recent-jobs" aria-labelledby="recent-jobs-title">
+        <h2 id="recent-jobs-title">Conversions récentes</h2>
+        <div class="card">
+            {% for job in recent_jobs %}
+            <div class="recent-job">
+                <a href="{% url 'core:preview' job.id %}">{{ job.source_filename }}</a>
+                <span class="recent-job-date">{{ job.created_at|date:'d/m/Y H:i' }} · {{ job.use_cases.count }} cas</span>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+</section>
+{% endblock %}
