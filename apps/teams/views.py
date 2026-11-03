@@ -634,11 +634,7 @@ class TeamDashboardView(APIView):
 
         # Global stats
         from apps.core.models import ConversionJob, ExtractedUseCase
-        job_ids = ConversionJob.objects.filter(
-            project__in=visible_projects
-        ).values_list('id', flat=True)
-
-        ucs = ExtractedUseCase.objects.filter(job_id__in=job_ids)
+        ucs = ExtractedUseCase.objects.filter(project__in=visible_projects)
         uc_total  = ucs.count()
         uc_passed = ucs.filter(status='Passé').count()
         success_rate = round(uc_passed / uc_total * 100, 1) if uc_total > 0 else 0
