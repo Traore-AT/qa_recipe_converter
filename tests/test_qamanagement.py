@@ -20,7 +20,7 @@ from rest_framework import status
 from apps.core.models import ConversionJob, ExtractedUseCase
 from apps.teams.models import Team, TeamMember, TeamInvitation, Project, ProjectMember
 from apps.qamanagement.models import (
-    Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment
+    Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment
 )
 
 
@@ -359,6 +359,7 @@ class TestSprintAPI:
         assert resp.data['name'] == 'Sprint Test API'
         assert resp.data['stats']['total'] == 0
 
+
     def test_create_sprint_as_tester_forbidden(self, client, team, project, tester_user):
         client.force_authenticate(tester_user)
         url = reverse('qamanagement:sprint-list', args=[team.slug, project.slug])
@@ -413,6 +414,45 @@ class TestSprintAPI:
         resp = client.get(url)
         assert resp.status_code == status.HTTP_200_OK
         assert resp.data['stats']['total'] == 0
+
+
+class TestSprintTicketAPI:
+    def test_create_search_update_delete_ticket(self, client, team, project, sprint, owner, tester_pm):
+        client.force_authenticate(owner)
+        list_url = reverse('qamanagement:sprint-ticket-list', args=[team.slug, project.slug, sprint.id])
+        created = client.post(list_url, {
+            'title': 'Créer un cas de test', 'description': 'Ticket indépendant',
+            'status': 'À tester', 'priority': 'high', 'assigned_to': str(tester_pm.id),
+        }, format='json')
+        assert created.status_code == status.HTTP_201_CREATED
+        ticket_id = created.data['id']
+        assert created.data['ticket_number'].startswith('TKT-')
+        assert created.data['assigned_to_user']['id'] == tester_pm.user_id
+        search = client.get(list_url, {'ticket': created.data['ticket_number'][-4:]})
+        assert search.data['count'] == 1
+        detail_url = reverse('qamanagement:sprint-ticket-detail', args=[team.slug, project.slug, sprint.id, ticket_id])
+        updated = client.patch(detail_url, {'status': 'En cours', 'title': 'Cas mis à jour'}, format='json')
+        assert updated.status_code == status.HTTP_200_OK
+        assert updated.data['status'] == 'En cours'
+        board = client.get(reverse('qamanagement:sprint-board', args=[team.slug, project.slug, sprint.id]))
+        assert board.data['tickets'][0]['id'] == ticket_id
+        assert board.data['stats']['total'] == 1
+        assert board.data['stats']['in_progress'] == 1
+        assert client.delete(detail_url).status_code == status.HTTP_204_NO_CONTENT
+
+    def test_ticket_creation_requires_project_manager(self, client, team, project, sprint, tester_user):
+        client.force_authenticate(tester_user)
+        url = reverse('qamanagement:sprint-ticket-list', args=[team.slug, project.slug, sprint.id])
+        response = client.post(url, {'title': 'Ticket non autorisé'}, format='json')
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_create_ticket_rejects_member_outside_project(self, client, team, project, sprint, owner, outsider):
+        client.force_authenticate(owner)
+        other_project = Project.objects.create(team=team, name='Other', created_by=owner)
+        other_member = ProjectMember.objects.create(project=other_project, user=outsider)
+        url = reverse('qamanagement:sprint-ticket-list', args=[team.slug, project.slug, sprint.id])
+        response = client.post(url, {'title': 'Ticket', 'assigned_to': str(other_member.id)}, format='json')
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
 # ═════════════════════════════════════════════════════════════════════════════

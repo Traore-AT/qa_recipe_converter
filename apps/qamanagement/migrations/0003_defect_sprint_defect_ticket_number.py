@@ -25,12 +25,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='defect',
             name='ticket_number',
-            field=models.CharField(blank=True, db_index=True, max_length=20),
+            field=models.CharField(blank=True, max_length=20),
         ),
         migrations.RunPython(populate_ticket_numbers, migrations.RunPython.noop),
         migrations.AlterField(
             model_name='defect',
             name='ticket_number',
-            field=models.CharField(blank=True, db_index=True, max_length=20, unique=True),
+            field=models.CharField(blank=True, max_length=20, unique=True),
         ),
     ]

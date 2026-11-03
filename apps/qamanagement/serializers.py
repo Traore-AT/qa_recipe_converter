@@ -1,8 +1,9 @@
 from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
+from .models import Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
 from apps.teams.serializers import UserPublicSerializer, ProjectSerializer
+from apps.teams.models import ProjectMember
 
 
 class SprintSerializer(serializers.ModelSerializer):
@@ -107,6 +108,26 @@ class DefectCreateSerializer(serializers.ModelSerializer):
         fields = ['sprint', 'use_case', 'title', 'description', 'severity', 'priority',
                   'assigned_to', 'steps_to_reproduce', 'expected_behavior',
                   'actual_behavior', 'environment', 'attachment']
+
+
+class SprintTicketSerializer(serializers.ModelSerializer):
+    assigned_to_user = UserPublicSerializer(source='assigned_to.user', read_only=True)
+    created_by_user = UserPublicSerializer(source='created_by', read_only=True)
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=ProjectMember.objects.select_related('project'), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = SprintTicket
+        fields = ['id', 'ticket_number', 'sprint', 'title', 'description', 'status', 'priority',
+                  'assigned_to', 'assigned_to_user', 'created_by', 'created_by_user', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'ticket_number', 'sprint', 'created_by', 'created_by_user', 'created_at', 'updated_at']
+
+    def validate_assigned_to(self, value):
+        sprint = self.context.get('sprint')
+        if value and sprint and value.project_id != sprint.project_id:
+            raise serializers.ValidationError('Le membre assigné doit appartenir au projet du sprint.')
+        return value
 
 
 class WeeklyReportSerializer(serializers.ModelSerializer):

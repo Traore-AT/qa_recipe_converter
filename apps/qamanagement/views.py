@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
+from .models import Sprint, UseCaseAssignment, SprintTicket, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
 from .serializers import (
     SprintSerializer, SprintCreateSerializer,
     UseCaseAssignmentSerializer, CreateAssignmentSerializer,
@@ -22,6 +22,7 @@ from .serializers import (
     ActivityLogSerializer, UseCaseCommentSerializer,
     MemberProgressSerializer, SprintBoardSerializer, DefectStatsSerializer,
     UseCaseScreenshotSerializer,
+    SprintTicketSerializer,
 )
 from apps.teams.models import Team, Project, ProjectMember, TeamMember
 from apps.teams.permissions import can_view_project, can_manage_project, can_write_project
@@ -148,9 +149,70 @@ class SprintBoardView(APIView):
         return Response({
             'sprint': SprintSerializer(sprint, context={'request': request}).data,
             'columns': columns,
-            'tickets': DefectSerializer(Defect.objects.filter(project=project, sprint=sprint).select_related('reported_by', 'assigned_to', 'use_case'), many=True, context={'request': request}).data,
+            'tickets': SprintTicketSerializer(SprintTicket.objects.filter(sprint=sprint).select_related('assigned_to__user', 'created_by'), many=True, context={'request': request, 'sprint': sprint}).data,
             'stats': sprint.stats,
         })
+
+
+class SprintTicketListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _get_sprint(self, slug, project_slug, sprint_id, user):
+        _, project = _get_team_and_project(slug, project_slug, user)
+        return get_object_or_404(Sprint, id=sprint_id, project=project)
+
+    def get(self, request, slug, project_slug, sprint_id):
+        sprint = self._get_sprint(slug, project_slug, sprint_id, request.user)
+        tickets = SprintTicket.objects.filter(sprint=sprint).select_related('assigned_to__user', 'created_by')
+        search = request.query_params.get('ticket', '').strip()
+        if search:
+            tickets = tickets.filter(ticket_number__icontains=search)
+        data = SprintTicketSerializer(tickets, many=True, context={'request': request, 'sprint': sprint}).data
+        return Response({'results': data, 'count': len(data)})
+
+    def post(self, request, slug, project_slug, sprint_id):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        if not can_manage_project(request.user, project):
+            return Response({'error': 'Seuls les responsables du projet peuvent créer des tickets.'}, status=status.HTTP_403_FORBIDDEN)
+        sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
+        serializer = SprintTicketSerializer(data=request.data, context={'request': request, 'sprint': sprint})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        ticket = serializer.save(sprint=sprint, created_by=request.user)
+        _log_activity(project, team, request.user, 'sprint_ticket_created',
+                      f'Ticket {ticket.ticket_number} créé dans le sprint « {sprint.name} ».')
+        return Response(SprintTicketSerializer(ticket, context={'request': request, 'sprint': sprint}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class SprintTicketDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _get_ticket(self, slug, project_slug, sprint_id, ticket_id, user):
+        _, project = _get_team_and_project(slug, project_slug, user)
+        sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
+        ticket = get_object_or_404(SprintTicket, id=ticket_id, sprint=sprint)
+        return project, sprint, ticket
+
+    def patch(self, request, slug, project_slug, sprint_id, ticket_id):
+        project, sprint, ticket = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        if not can_manage_project(request.user, project):
+            return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
+        serializer = SprintTicketSerializer(ticket, data=request.data, partial=True,
+                                            context={'request': request, 'sprint': sprint})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        ticket = serializer.save()
+        return Response(SprintTicketSerializer(ticket, context={'request': request, 'sprint': sprint}).data)
+
+    def delete(self, request, slug, project_slug, sprint_id, ticket_id):
+        project, _, ticket = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
+        if not can_manage_project(request.user, project):
+            return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
+        ticket.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
