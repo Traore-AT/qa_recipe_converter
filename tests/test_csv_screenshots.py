@@ -26,6 +26,14 @@ from apps.teams.models import Team, TeamMember, Project, ProjectMember
 from apps.qamanagement.models import Sprint, UseCaseAssignment, UseCaseScreenshot, UseCaseComment
 
 
+def png_file():
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new('RGB', (2, 2), 'white').save(buffer, 'PNG')
+    return SimpleUploadedFile('capture.png', buffer.getvalue(), content_type='image/png')
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FIXTURES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,18 +167,21 @@ def screenshot(db, assignment, owner):
 class TestGenerateCSVAPI:
     """Tests pour l'export CSV depuis un job de conversion"""
 
-    def test_csv_returns_valid_content_type(self, api_client, done_job):
+    def test_csv_returns_valid_content_type(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         assert resp.status_code == 200
         assert resp['Content-Type'] == 'text/csv; charset=utf-8'
 
-    def test_csv_has_correct_filename(self, api_client, done_job):
+    def test_csv_has_correct_filename(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         assert resp.status_code == 200
         assert 'recette' in resp['Content-Disposition']
         assert resp['Content-Disposition'].endswith('.csv"')
 
-    def test_csv_headers(self, api_client, done_job):
+    def test_csv_headers(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         content = resp.content.decode('utf-8')
         reader = csv.reader(io.StringIO(content))
@@ -180,14 +191,16 @@ class TestGenerateCSVAPI:
                      'Statut', 'Automatisé']
         assert headers == expected
 
-    def test_csv_includes_all_use_cases(self, api_client, done_job):
+    def test_csv_includes_all_use_cases(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         content = resp.content.decode('utf-8')
         reader = csv.reader(io.StringIO(content))
         rows = list(reader)
         assert len(rows) == 4  # header + 3 use cases
 
-    def test_csv_use_case_data(self, api_client, done_job):
+    def test_csv_use_case_data(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         _, ucs = done_job
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         content = resp.content.decode('utf-8')
@@ -201,7 +214,8 @@ class TestGenerateCSVAPI:
         assert row1[3] == ucs[0].description
         assert row1[8] == ucs[0].status
 
-    def test_csv_automated_column(self, api_client, done_job):
+    def test_csv_automated_column(self, api_client, owner, done_job):
+        api_client.force_authenticate(owner)
         resp = api_client.get(f'/api/jobs/{done_job[0].id}/csv/')
         content = resp.content.decode('utf-8')
         reader = csv.reader(io.StringIO(content))
@@ -322,7 +336,7 @@ class TestUseCaseScreenshotViews:
         client.force_authenticate(owner)
         url = reverse('qamanagement:screenshot-list', args=[team.slug, project.slug, assignment.id])
         resp = client.post(url, {
-            'image': io.BytesIO(b'fake-image-data'),
+            'image': png_file(),
             'caption': 'Nouvelle capture',
         }, format='multipart')
         assert resp.status_code == 201
@@ -361,7 +375,7 @@ class TestUseCaseScreenshotViews:
         client.force_authenticate(owner)
         url = reverse('qamanagement:screenshot-list', args=[team.slug, project.slug, assignment.id])
         resp = client.post(url, {
-            'image': io.BytesIO(b'fake-image'),
+            'image': png_file(),
             'caption': 'Activity test',
         }, format='multipart')
         assert resp.status_code == 201

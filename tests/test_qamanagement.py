@@ -306,6 +306,7 @@ class TestActivityLogModel:
     def test_activity_ordering(self, db, project, team, owner):
         a1 = ActivityLog.objects.create(project=project, team=team, actor=owner, action_type='test', description='First')
         a2 = ActivityLog.objects.create(project=project, team=team, actor=owner, action_type='test', description='Second')
+        ActivityLog.objects.filter(pk=a1.pk).update(created_at=a2.created_at - timedelta(seconds=1))
         logs = ActivityLog.objects.all()
         assert logs[0] == a2  # newest first
 

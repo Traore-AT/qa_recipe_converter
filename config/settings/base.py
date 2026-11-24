@@ -159,6 +159,8 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
+# Nom des fichiers téléchargés, lisible par l'interface hébergée sur un autre domaine.
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
@@ -166,11 +168,26 @@ CSRF_TRUSTED_ORIGINS = [
     "https://localhost",
 ]
 
+# Recherche de fichiers locale : désactivée par défaut (jamais exposée en production).
+FILE_SEARCH_ROOT = os.getenv('FILE_SEARCH_ROOT', '')
+
+# Exécute les tâches de fond immédiatement (tests, débogage).
+BACKGROUND_TASKS_INLINE = os.getenv('BACKGROUND_TASKS_INLINE', '').lower() in ('1', 'true')
+
+# ── Stockage des fichiers envoyés ─────────────────────────────────────────────
+# Sans S3_BUCKET : disque local (media/). Avec : tout service compatible S3
+# (AWS, Cloudflare R2, Scaleway, MinIO…). Fichiers privés, servis par URL signée.
+S3_BUCKET = os.getenv('S3_BUCKET', '')
+if S3_BUCKET:
+    from config.storage import s3_storage
+    STORAGES['default'] = s3_storage(os.environ)
+
 # Email (dev: console, prod: SMTP via env)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 EMAIL_HOST     = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT     = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS  = True
+EMAIL_TIMEOUT  = 15
 EMAIL_HOST_USER     = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL  = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@qa-recipe.dev')
@@ -186,6 +203,15 @@ AVATAR_MAX_SIZE_MB = 2
 # Base URL for absolute links in emails
 SITE_URL = os.getenv('SITE_URL', 'http://localhost:8000')
 
+# URL de l'interface React, pour les liens des e-mails (par défaut : SITE_URL).
+FRONTEND_URL = (os.getenv('FRONTEND_URL') or SITE_URL).rstrip('/')
+
 # Base URL of the Jira instance (ex: https://acme.atlassian.net)
 # Used to build hyperlinks "browse/<KEY>" in the Excel recipe and the Kanban.
 JIRA_BASE_URL = os.getenv('JIRA_BASE_URL', '')
+
+# Synchronisation des anomalies (compte technique Jira Cloud). Les secrets restent dans
+# l'environnement ; l'activation par projet est réservée aux super-administrateurs.
+JIRA_EMAIL = os.getenv('JIRA_EMAIL', '')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN', '')
+JIRA_WEBHOOK_SECRET = os.getenv('JIRA_WEBHOOK_SECRET', '')

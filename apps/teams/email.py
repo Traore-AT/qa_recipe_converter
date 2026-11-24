@@ -33,8 +33,8 @@ Connectez-vous dès maintenant : {settings.SITE_URL}{reverse('web-login')}
 def send_invitation_email(invitation):
     team = invitation.team
     invited_by = invitation.invited_by
-    accept_url = f"{settings.SITE_URL}/invitation/{invitation.token}/"
-    reject_url = f"{settings.SITE_URL}/invitation/{invitation.token}/"
+    accept_url = f"{settings.FRONTEND_URL}/invitation/{invitation.token}/"
+    reject_url = f"{settings.FRONTEND_URL}/invitation/{invitation.token}/"
 
     projects = team.projects.all()
     projects_count = projects.count()
@@ -81,14 +81,14 @@ def send_sprint_assignment_email(assignment, sprint, assigned_by):
     use_case = assignment.use_case
     project = sprint.project
     subject = f"[{project.name}] Nouveau cas assigné — Sprint {sprint.name}"
-    board_url = f"{settings.SITE_URL}/teams/{project.team.slug}/projects/{project.slug}/sprints/{sprint.id}"
+    board_url = f"{settings.FRONTEND_URL}/teams/{project.team.slug}/projects/{project.slug}/sprints/{sprint.id}"
     html_body = render_to_string("emails/sprint_assignment.html", {
         "member_name": member.user.get_full_name() or member.user.username,
         "sprint_name": sprint.name,
         "project_name": project.name,
         "team_name": project.team.name,
         "assigned_by_name": assigned_by.get_full_name() or assigned_by.username,
-        "use_case_order": use_case.order,
+        "use_case_order": use_case.case_number,
         "use_case_text": use_case.use_case_text,
         "use_case_description": use_case.description,
         "board_url": board_url,
@@ -99,7 +99,7 @@ Bonjour {member.user.get_full_name() or member.user.username},
 
 {assigned_by.get_full_name() or assigned_by.username} vous a assigné un cas de test dans le sprint "{sprint.name}" du projet "{project.name}".
 
-Cas #{use_case.order} — {use_case.use_case_text or use_case.description[:50]}
+CAS-{use_case.case_number:03d} — {use_case.use_case_text or use_case.description[:50]}
 
 Accédez au tableau Kanban : {board_url}
 """
@@ -108,7 +108,7 @@ Accédez au tableau Kanban : {board_url}
 
 def send_member_completed_email(member, sprint, project):
     subject = f"[{project.name}] {member.user.username} a terminé son sprint {sprint.name}"
-    project_url = f"{settings.SITE_URL}/teams/{project.team.slug}/projects/{project.slug}"
+    project_url = f"{settings.FRONTEND_URL}/teams/{project.team.slug}/projects/{project.slug}"
     html_body = render_to_string("emails/member_completed.html", {
         "member_name": member.user.get_full_name() or member.user.username,
         "sprint_name": sprint.name,
@@ -137,7 +137,7 @@ def send_password_reset_email(user):
 
     uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
     token = PasswordResetTokenGenerator().make_token(user)
-    reset_url = f"{settings.SITE_URL}/reset-password/{uidb64}/{token}/"
+    reset_url = f"{settings.FRONTEND_URL}/reset-password/{uidb64}/{token}/"
 
     subject = "Réinitialisation de votre mot de passe - QA Recipe Converter"
     html_body = render_to_string("emails/password_reset.html", {
@@ -161,11 +161,26 @@ Ce lien expirera dans 24 heures.
     _send_email(subject, text_body, html_body, [user.email])
 
 
-def _send_email(subject, text_body, html_body, to_emails):
+def send_email(subject, text_body, html_body, to_emails, attachments=()):
+    """Envoie un e-mail ; retourne True s'il est parti. Un échec est journalisé, jamais propagé."""
+    # Les comptes créés par un propriétaire n'ont pas forcément d'adresse e-mail.
+    to_emails = [email for email in to_emails if email]
+    if not to_emails:
+        return False
+    # Un saut de ligne dans un titre saisi par l'utilisateur ne doit pas bloquer l'envoi.
+    subject = ' '.join(str(subject).split())[:200]
     try:
         msg = EmailMultiAlternatives(subject, text_body, settings.DEFAULT_FROM_EMAIL, to_emails)
         msg.attach_alternative(html_body, "text/html")
+        for attachment in attachments:
+            msg.attach(*attachment)
         msg.send()
         logger.info("Email sent to %s: %s", ", ".join(to_emails), subject)
+        return True
     except Exception as e:
         logger.warning("Failed to send email to %s: %s", ", ".join(to_emails), e)
+        return False
+
+
+def _send_email(subject, text_body, html_body, to_emails):
+    return send_email(subject, text_body, html_body, to_emails)

@@ -9,8 +9,6 @@ from apps.teams.permissions import (
     _get_team_role, _get_project_role,
 )
 
-PY314 = sys.version_info >= (3, 14)
-skip_if_py314 = pytest.mark.skipif(PY314, reason='Django 5.0.6 incompatible avec Python 3.14')
 
 
 @pytest.fixture

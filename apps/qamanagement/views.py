@@ -1,27 +1,35 @@
 import csv
 import io
 import logging
+import uuid
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.text import slugify
 from datetime import date, timedelta
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import Sprint, UseCaseAssignment, Defect, WeeklyReport, ActivityLog, UseCaseComment, UseCaseScreenshot
+from .models import (
+    Sprint, UseCaseAssignment, UseCaseExecution, Defect, WeeklyReport, ActivityLog,
+    UseCaseComment, UseCaseScreenshot, CASE_STATUSES,
+)
+from .services import assignable_members, record_defect_changes, resolve_assignee, snapshot_defect
+from . import analytics, jira
+from .notifications import alert_if_critical
 from .serializers import (
     SprintSerializer, SprintCreateSerializer,
     UseCaseAssignmentSerializer, CreateAssignmentSerializer,
-    DefectSerializer, DefectCreateSerializer,
+    DefectSerializer, DefectWriteSerializer, DefectCommentSerializer, DefectHistorySerializer,
     WeeklyReportSerializer,
     ActivityLogSerializer, UseCaseCommentSerializer,
-    MemberProgressSerializer, SprintBoardSerializer, DefectStatsSerializer,
     UseCaseScreenshotSerializer,
     SprintCaseCreateSerializer, SprintCaseUpdateSerializer,
 )
@@ -36,12 +44,53 @@ logger = logging.getLogger(__name__)
 def _get_team_and_project(slug, project_slug, user):
     team = get_object_or_404(Team, slug=slug)
     if not team.is_member(user):
-        from rest_framework.exceptions import PermissionDenied
         raise PermissionDenied("Vous n'êtes pas membre de cette équipe.")
     project = get_object_or_404(Project, team=team, slug=project_slug)
     if not can_view_project(user, project):
         raise PermissionDenied("Accès refusé à ce projet.")
     return team, project
+
+
+def _require_write(user, project):
+    if project.is_archived:
+        raise PermissionDenied('Projet archivé — lecture seule.')
+    if not can_write_project(user, project):
+        raise PermissionDenied('Les lecteurs ne peuvent pas modifier ce projet.')
+
+
+def _assignments(**filters):
+    """Affectations avec tout ce que leur sérialisation consulte (évite les requêtes N+1)."""
+    return UseCaseAssignment.objects.filter(**filters).select_related(
+        'use_case', 'sprint', 'assigned_to__user', 'assigned_by', 'carried_from',
+    ).prefetch_related('use_case__defects', 'use_case__related_defects', 'use_case__executions')
+
+
+def _bad_request(field, message):
+    from rest_framework.exceptions import ValidationError
+    return ValidationError({field: [message]})
+
+
+def _uuid_or_400(value, field):
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise _bad_request(field, 'Identifiant invalide.')
+
+
+def _int_or_400(value, field):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise _bad_request(field, 'Nombre invalide.')
+
+
+def _date_or_400(value, field):
+    if not value:
+        return None
+    try:
+        return value if isinstance(value, date) else date.fromisoformat(str(value))
+    except ValueError:
+        raise _bad_request(field, 'Date invalide (format attendu : AAAA-MM-JJ).')
 
 
 def _log_activity(project, team, actor, action_type, description, metadata=None, target_users=None):
@@ -106,13 +155,20 @@ class SprintDetailView(APIView):
         team, project, sprint = self._get_sprint(slug, project_slug, sprint_id, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
-        allowed = ['name', 'goal', 'start_date', 'end_date', 'status']
-        for field in allowed:
-            if field in request.data:
-                setattr(sprint, field, request.data[field])
-        sprint.save()
+        before = {'name': sprint.name, 'start_date': str(sprint.start_date), 'end_date': str(sprint.end_date)}
+        s = SprintCreateSerializer(sprint, data=request.data, partial=True)
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        sprint = s.save()
+        changes = []
+        if before['name'] != sprint.name:
+            changes.append(f'renommé « {before["name"]} » → « {sprint.name} »')
+        if (before['start_date'], before['end_date']) != (str(sprint.start_date), str(sprint.end_date)):
+            changes.append(f'période {sprint.start_date} → {sprint.end_date} ({sprint.duration_days} jours)')
         _log_activity(project, team, request.user, 'sprint_updated',
-                      f'Sprint "{sprint.name}" mis à jour → {sprint.get_status_display()}')
+                      f'Sprint "{sprint.name}" mis à jour → {sprint.get_status_display()}'
+                      + (f' ({" ; ".join(changes)})' if changes else ''),
+                      metadata={'before': before})
         return Response(SprintSerializer(sprint, context={'request': request}).data)
 
     def delete(self, request, slug, project_slug, sprint_id):
@@ -132,9 +188,7 @@ class SprintBoardView(APIView):
 
     def get(self, request, slug, project_slug, sprint_id):
         team, project, sprint = SprintDetailView()._get_sprint(slug, project_slug, sprint_id, request.user)
-        assignments = UseCaseAssignment.objects.filter(sprint=sprint).select_related(
-            'use_case', 'assigned_to__user', 'assigned_by'
-        )
+        assignments = _assignments(sprint=sprint)
         columns = {
             'À tester': [],
             'En cours': [],
@@ -143,7 +197,7 @@ class SprintBoardView(APIView):
             'Bloqué': [],
         }
         for a in assignments:
-            status_key = a.use_case.status
+            status_key = a.effective_status
             if status_key not in columns:
                 status_key = 'À tester'
             columns[status_key].append(UseCaseAssignmentSerializer(a, context={'request': request}).data)
@@ -153,6 +207,26 @@ class SprintBoardView(APIView):
             'tickets': [],
             'stats': sprint.stats,
         })
+
+
+def _sprint_assignment(sprint, ticket_id):
+    """Affectation désignée par son id ou celui du cas (un cas peut être confié à plusieurs membres)."""
+    from django.http import Http404
+    assignment = _assignments(sprint=sprint).filter(Q(use_case_id=ticket_id) | Q(id=ticket_id)).first()
+    if assignment is None:
+        raise Http404('Cas introuvable dans ce sprint.')
+    return assignment
+
+
+def _reassignment_conflict(serializer, assignment):
+    """Réponse 400 si le cas est déjà confié à ce membre dans le même sprint, sinon None."""
+    assignee = serializer.validated_data.get('assigned_to', assignment.assigned_to)
+    if assignee and UseCaseAssignment.objects.filter(
+            use_case=assignment.use_case, sprint=assignment.sprint, assigned_to=assignee
+    ).exclude(pk=assignment.pk).exists():
+        return Response({'assigned_to': ['Ce cas est déjà assigné à ce membre dans ce sprint.']},
+                        status=status.HTTP_400_BAD_REQUEST)
+    return None
 
 
 class SprintCaseListCreateView(APIView):
@@ -165,7 +239,7 @@ class SprintCaseListCreateView(APIView):
 
     def get(self, request, slug, project_slug, sprint_id):
         sprint = self._get_sprint(slug, project_slug, sprint_id, request.user)
-        assignments = UseCaseAssignment.objects.filter(sprint=sprint).select_related('use_case', 'assigned_to__user', 'assigned_by')
+        assignments = _assignments(sprint=sprint)
         search = request.query_params.get('ticket', '').strip()
         if search:
             number = search.upper().removeprefix('CAS-').strip()
@@ -188,6 +262,9 @@ class SprintCaseListCreateView(APIView):
             assigned_to = serializer.validated_data.pop('assigned_to', None)
             initial_comment = serializer.validated_data.pop('comment', '').strip()
             case = serializer.save(project=project, order=0)
+            if case.status != ExtractedUseCase.UCStatus.TO_TEST:
+                # Le cas est rattaché au sprint après sa création : on complète son historique.
+                UseCaseExecution.objects.filter(use_case=case).update(sprint=sprint, executed_by=request.user)
             assignment = UseCaseAssignment.objects.create(
                 use_case=case, sprint=sprint, assigned_to=assigned_to,
                 assigned_by=request.user, status=case.status)
@@ -206,9 +283,7 @@ class SprintCaseDetailView(APIView):
     def _get_ticket(self, slug, project_slug, sprint_id, ticket_id, user):
         _, project = _get_team_and_project(slug, project_slug, user)
         sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
-        assignment = get_object_or_404(UseCaseAssignment.objects.select_related('use_case', 'assigned_to__user'),
-                                       Q(use_case_id=ticket_id) | Q(id=ticket_id), sprint=sprint)
-        return project, sprint, assignment
+        return project, sprint, _sprint_assignment(sprint, ticket_id)
 
     def patch(self, request, slug, project_slug, sprint_id, ticket_id):
         project, sprint, assignment = self._get_ticket(slug, project_slug, sprint_id, ticket_id, request.user)
@@ -218,8 +293,11 @@ class SprintCaseDetailView(APIView):
                                                 context={'request': request, 'project': project, 'assignment': assignment})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        conflict = _reassignment_conflict(serializer, assignment)
+        if conflict:
+            return conflict
         serializer.save()
-        assignment.refresh_from_db()
+        assignment = _assignments(pk=assignment.pk).get()
         return Response(UseCaseAssignmentSerializer(assignment, context={'request': request}).data)
 
     def delete(self, request, slug, project_slug, sprint_id, ticket_id):
@@ -244,7 +322,7 @@ class SprintCaseCommentListCreateView(APIView):
     def _ticket(self, slug, project_slug, sprint_id, ticket_id, user):
         _, project = _get_team_and_project(slug, project_slug, user)
         sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
-        return get_object_or_404(UseCaseAssignment, Q(use_case_id=ticket_id) | Q(id=ticket_id), sprint=sprint)
+        return _sprint_assignment(sprint, ticket_id)
 
     def get(self, request, slug, project_slug, sprint_id, ticket_id):
         assignment = self._ticket(slug, project_slug, sprint_id, ticket_id, request.user)
@@ -270,16 +348,14 @@ class AssignmentListCreateView(APIView):
 
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        assignments = UseCaseAssignment.objects.filter(
-            use_case__project=project
-        ).select_related('use_case', 'assigned_to__user', 'assigned_by')
+        assignments = _assignments(use_case__project=project)
 
         sprint_f = request.query_params.get('sprint')
         if sprint_f:
-            assignments = assignments.filter(sprint_id=sprint_f)
+            assignments = assignments.filter(sprint_id=_uuid_or_400(sprint_f, 'sprint'))
         user_f = request.query_params.get('user_id')
         if user_f:
-            assignments = assignments.filter(assigned_to__user_id=user_f)
+            assignments = assignments.filter(assigned_to__user_id=_int_or_400(user_f, 'user_id'))
 
         s = UseCaseAssignmentSerializer(assignments, many=True, context={'request': request})
         return Response({'results': s.data, 'count': len(s.data)})
@@ -303,20 +379,32 @@ class AssignmentListCreateView(APIView):
         except User.DoesNotExist:
             return Response({'error': 'Utilisateur introuvable.'}, status=status.HTTP_404_NOT_FOUND)
 
-        pm = ProjectMember.objects.filter(project=project, user=target_user).first()
-        if not pm:
-            return Response({'error': 'Cet utilisateur n\'est pas membre du projet.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+        # Tout membre de l'équipe peut recevoir des cas : il rejoint alors le projet comme testeur.
+        pm, error = resolve_assignee(project, target_user.id)
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
 
         sprint = None
         if sprint_id:
             sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
+            if sprint.is_frozen:
+                return Response({'error': "Ce sprint est terminé : rouvrez-le pour y assigner des cas."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
         ucs = ExtractedUseCase.objects.filter(id__in=use_case_ids, project=project)
         created = []
         errors = []
         created_assignments = []
         for uc in ucs:
+            waiting = UseCaseAssignment.objects.filter(use_case=uc, sprint=sprint, assigned_to__isnull=True).first()
+            already = UseCaseAssignment.objects.filter(use_case=uc, sprint=sprint, assigned_to=pm).exists()
+            if waiting and not already:
+                # Le cas est déjà dans le sprint sans responsable : on le complète au lieu de le dupliquer.
+                waiting.assigned_to, waiting.assigned_by = pm, request.user
+                waiting.save(update_fields=['assigned_to', 'assigned_by'])
+                created.append(str(uc.id))
+                created_assignments.append(waiting)
+                continue
             assignment, was_created = UseCaseAssignment.objects.get_or_create(
                 use_case=uc, assigned_to=pm, sprint=sprint,
                 defaults={'assigned_by': request.user, 'status': uc.status})
@@ -365,23 +453,24 @@ class AssignmentDeleteView(APIView):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, sprint__project=project,
-                                       use_case__project=project)
+        assignment = get_object_or_404(_assignments(sprint__project=project, use_case__project=project),
+                                       id=assignment_id)
         serializer = SprintCaseUpdateSerializer(
             assignment.use_case, data=request.data, partial=True,
             context={'request': request, 'project': project, 'assignment': assignment})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        new_assignee = serializer.validated_data.get('assigned_to', assignment.assigned_to)
-        if new_assignee and UseCaseAssignment.objects.filter(
-                use_case=assignment.use_case, sprint=assignment.sprint, assigned_to=new_assignee
-        ).exclude(pk=assignment.pk).exists():
-            return Response({'assigned_to': ['Ce cas est déjà assigné à ce membre dans ce sprint.']},
-                            status=status.HTTP_400_BAD_REQUEST)
+        conflict = _reassignment_conflict(serializer, assignment)
+        if conflict:
+            return conflict
+        previous = assignment.assigned_to_id
         serializer.save()
-        assignment.refresh_from_db()
-        assignment.status = assignment.use_case.status
-        assignment.save(update_fields=['status'])
+        assignment = _assignments(pk=assignment.pk).get()
+        if assignment.assigned_to_id and assignment.assigned_to_id != previous:
+            target = assignment.assigned_to.user
+            _log_activity(project, team, request.user, 'assignments_created',
+                          f'CAS-{assignment.use_case.case_number:03d} assigné à {target.username}',
+                          target_users=[target])
         return Response(UseCaseAssignmentSerializer(assignment, context={'request': request}).data)
 
 
@@ -395,21 +484,27 @@ class UseCaseStatusUpdateView(APIView):
 
     def patch(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
+        _require_write(request.user, project)
         uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
 
         new_status = request.data.get('status')
-        valid_statuses = ['À tester', 'En cours', 'Passé', 'Échoué', 'Bloqué']
-        if new_status not in valid_statuses:
-            return Response({'error': f'Statut invalide. Valeurs: {", ".join(valid_statuses)}'},
+        if new_status not in CASE_STATUSES:
+            return Response({'error': f'Statut invalide. Valeurs: {", ".join(CASE_STATUSES)}'},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        sprint = None
+        if request.data.get('sprint_id'):
+            sprint = get_object_or_404(Sprint, id=_uuid_or_400(request.data['sprint_id'], 'sprint_id'), project=project)
+            if sprint.is_frozen:
+                return Response({'error': 'Ce sprint est terminé : rouvrez-le pour modifier les résultats.'},
+                                status=status.HTTP_400_BAD_REQUEST)
 
         old_status = uc.status
         uc.status = new_status
-        uc.observed_results = request.data.get('observed_results', uc.observed_results)
+        uc.observed_results = request.data.get('observed_results', uc.observed_results) or ''
+        # L'historique d'exécution et la synchronisation des sprints ouverts sont gérés par signals.py
+        uc._status_actor, uc._status_sprint = request.user, sprint
         uc.save()
-
-        # Sync assigned UC status
-        UseCaseAssignment.objects.filter(use_case=uc).update(status=new_status)
 
         # Notify project leads
         lead_members = ProjectMember.objects.filter(project=project, role='lead').values_list('user', flat=True)
@@ -445,6 +540,8 @@ class UseCaseStatusUpdateView(APIView):
             'id': str(uc.id),
             'status': uc.status,
             'observed_results': uc.observed_results,
+            'is_regression': bool(old_status != new_status and UseCaseExecution.objects.filter(
+                use_case=uc).order_by('-executed_at').values_list('is_regression', flat=True).first()),
         })
 
 
@@ -454,6 +551,7 @@ class UseCaseJiraUpdateView(APIView):
 
     def patch(self, request, slug, project_slug, uc_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
+        _require_write(request.user, project)
         uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
 
         uc.jira_ticket = (request.data.get('jira_ticket') or '').strip()
@@ -499,55 +597,86 @@ class UseCaseCommentListCreateView(APIView):
 # DEFECTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _defects(project):
+    return Defect.objects.filter(project=project).select_related(
+        'reported_by', 'assigned_to', 'use_case', 'sprint', 'regression_of',
+    ).prefetch_related('related_use_cases', 'comments')
+
+
+def _flag(value):
+    return str(value).lower() in ('1', 'true', 'oui')
+
+
+def _filter_defects(defects, params):
+    """Filtres communs à la liste et à l'export des anomalies."""
+    for field in ('status', 'severity', 'priority'):
+        if params.get(field):
+            defects = defects.filter(**{field: params[field]})
+    if params.get('assigned_to'):
+        defects = defects.filter(assigned_to_id=_int_or_400(params['assigned_to'], 'assigned_to'))
+    if params.get('sprint') == 'none':
+        defects = defects.filter(sprint__isnull=True)
+    elif params.get('sprint'):
+        defects = defects.filter(sprint_id=_uuid_or_400(params['sprint'], 'sprint'))
+    if params.get('use_case'):
+        case_id = _uuid_or_400(params['use_case'], 'use_case')
+        defects = defects.filter(Q(use_case_id=case_id) | Q(related_use_cases=case_id)).distinct()
+    if params.get('regression'):
+        defects = defects.filter(is_regression=_flag(params['regression']))
+    if params.get('ticket'):
+        defects = defects.filter(ticket_number__iexact=params['ticket'].strip())
+    search = params.get('search', '').strip()
+    if search:
+        defects = defects.filter(Q(title__icontains=search) | Q(description__icontains=search)
+                                 | Q(ticket_number__icontains=search))
+    return defects
+
+
 class DefectListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    PAGE_SIZE = 20
 
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        defects = Defect.objects.filter(project=project).select_related(
-            'reported_by', 'assigned_to', 'use_case'
-        )
+        defects = _filter_defects(_defects(project), request.query_params)
+        params = request.query_params
 
-        status_f = request.query_params.get('status')
-        if status_f:
-            defects = defects.filter(status=status_f)
-        severity_f = request.query_params.get('severity')
-        if severity_f:
-            defects = defects.filter(severity=severity_f)
-        priority_f = request.query_params.get('priority')
-        if priority_f:
-            defects = defects.filter(priority=priority_f)
-        assigned_f = request.query_params.get('assigned_to')
-        if assigned_f:
-            defects = defects.filter(assigned_to_id=assigned_f)
-        sprint_f = request.query_params.get('sprint')
-        if sprint_f:
-            defects = defects.filter(sprint_id=sprint_f)
-        ticket_f = request.query_params.get('ticket')
-        if ticket_f:
-            defects = defects.filter(ticket_number__iexact=ticket_f.strip())
-
+        count = defects.count()
+        # Pagination à la demande : sans `page`, la liste complète est renvoyée.
+        if params.get('page'):
+            page = max(_int_or_400(params['page'], 'page'), 1)
+            defects = defects[(page - 1) * self.PAGE_SIZE:page * self.PAGE_SIZE]
         s = DefectSerializer(defects, many=True, context={'request': request})
-        return Response({'results': s.data, 'count': len(s.data)})
+        return Response({'results': s.data, 'count': count})
 
     def post(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        s = DefectCreateSerializer(data=request.data, context={'request': request})
-        if s.is_valid():
-            sprint = s.validated_data.get('sprint')
-            if sprint and sprint.project_id != project.id:
-                return Response({'sprint': ['Le sprint doit appartenir à ce projet.']}, status=status.HTTP_400_BAD_REQUEST)
-            assigned_to = s.validated_data.get('assigned_to')
-            if assigned_to and not ProjectMember.objects.filter(project=project, user=assigned_to).exists():
-                return Response({'assigned_to': ['Cet utilisateur ne fait pas partie du projet.']}, status=status.HTTP_400_BAD_REQUEST)
-            defect = s.save(project=project, reported_by=request.user)
-            _log_activity(project, team, request.user, 'defect_created',
-                          f'Anomalie signalée : {defect.title} ({defect.get_severity_display()})',
-                          target_users=[defect.assigned_to] if defect.assigned_to else None)
-            return Response(DefectSerializer(defect, context={'request': request}).data,
-                            status=status.HTTP_201_CREATED)
-        return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        _require_write(request.user, project)
+        s = DefectWriteSerializer(data=request.data, context={'request': request, 'project': project})
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        extra = {}
+        if 'is_regression' not in s.validated_data:
+            # Détection automatique : le cas lié passait auparavant, ou une anomalie d'origine est indiquée.
+            case = s.validated_data.get('use_case')
+            extra['is_regression'] = bool(s.validated_data.get('regression_of')) or bool(
+                case and UseCaseExecution.objects.filter(use_case=case, is_regression=True).exists()
+                and case.status == ExtractedUseCase.UCStatus.FAILED)
+        with transaction.atomic():
+            new_status = s.validated_data.pop('status', Defect.Status.OPEN)
+            defect = s.save(project=project, reported_by=request.user, **extra)
+            if new_status != defect.status:
+                defect.apply_status(new_status)
+                defect.save()
+        _log_activity(project, team, request.user, 'defect_created',
+                      f'{"Régression" if defect.is_regression else "Anomalie"} signalée : '
+                      f'{defect.title} ({defect.get_severity_display()})',
+                      target_users=[defect.assigned_to] if defect.assigned_to else None)
+        alert_if_critical(defect)
+        jira.queue_push(defect)
+        defect = _defects(project).get(pk=defect.pk)
+        return Response(DefectSerializer(defect, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 class DefectDetailView(APIView):
@@ -556,7 +685,7 @@ class DefectDetailView(APIView):
 
     def _get_defect(self, slug, project_slug, defect_id, user):
         team, project = _get_team_and_project(slug, project_slug, user)
-        defect = get_object_or_404(Defect, id=defect_id, project=project)
+        defect = get_object_or_404(_defects(project), id=defect_id)
         return team, project, defect
 
     def get(self, request, slug, project_slug, defect_id):
@@ -565,42 +694,76 @@ class DefectDetailView(APIView):
 
     def patch(self, request, slug, project_slug, defect_id):
         team, project, defect = self._get_defect(slug, project_slug, defect_id, request.user)
-        allowed = ['title', 'description', 'severity', 'priority', 'status', 'sprint',
-                   'steps_to_reproduce', 'expected_behavior',
-                   'actual_behavior', 'environment']
-        old_status = defect.status
-        for field in allowed:
-            if field in request.data:
-                if field == 'sprint':
-                    sprint_id = request.data[field]
-                    defect.sprint = get_object_or_404(Sprint, id=sprint_id, project=project) if sprint_id else None
-                else:
-                    setattr(defect, field, request.data[field])
-        if 'assigned_to' in request.data:
-            assigned_id = request.data['assigned_to']
-            defect.assigned_to_id = assigned_id or None
-        if 'attachment' in request.FILES:
-            defect.attachment = request.FILES['attachment']
-        defect.save()
+        _require_write(request.user, project)
+        s = DefectWriteSerializer(defect, data=request.data, partial=True,
+                                  context={'request': request, 'project': project})
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        before = snapshot_defect(defect)
+        was_alerting = defect.severity == 'critical' and defect.is_open
+        old_status, old_label, old_assignee = defect.status, defect.get_status_display(), defect.assigned_to_id
+        with transaction.atomic():
+            new_status = s.validated_data.pop('status', None)
+            if new_status and new_status != defect.status:
+                defect.apply_status(new_status)
+            s.save()
+            record_defect_changes(defect, before, request.user)
 
         if old_status != defect.status:
-            interested = []
-            if defect.assigned_to:
-                interested.append(defect.assigned_to)
-            if defect.reported_by and defect.reported_by != request.user:
-                interested.append(defect.reported_by)
+            interested = {u for u in (defect.assigned_to, defect.reported_by) if u and u != request.user}
             _log_activity(project, team, request.user, 'defect_status',
-                          f'Anomalie "{defect.title}" : {dict(Defect.Status.choices).get(old_status, old_status)} → {defect.get_status_display()}',
-                          target_users=list(set(interested)))
+                          f'Anomalie "{defect.title}" : {old_label} → {defect.get_status_display()}',
+                          target_users=list(interested))
+        if defect.assigned_to_id and defect.assigned_to_id != old_assignee:
+            _log_activity(project, team, request.user, 'defect_assigned',
+                          f'Anomalie "{defect.title}" assignée à {defect.assigned_to.username}',
+                          target_users=[defect.assigned_to])
 
+        alert_if_critical(defect, was_alerting)
+        jira.queue_push(defect)
+        defect = _defects(project).get(pk=defect.pk)
         return Response(DefectSerializer(defect, context={'request': request}).data)
 
     def delete(self, request, slug, project_slug, defect_id):
         team, project, defect = self._get_defect(slug, project_slug, defect_id, request.user)
         if not can_manage_project(request.user, project):
             return Response({'error': 'Non autorisé.'}, status=status.HTTP_403_FORBIDDEN)
+        _log_activity(project, team, request.user, 'defect_deleted',
+                      f'Anomalie {defect.ticket_number} "{defect.title}" supprimée')
         defect.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DefectCommentListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def get(self, request, slug, project_slug, defect_id):
+        _, _, defect = DefectDetailView()._get_defect(slug, project_slug, defect_id, request.user)
+        data = DefectCommentSerializer(defect.comments.select_related('author'), many=True).data
+        return Response({'results': data, 'count': len(data)})
+
+    def post(self, request, slug, project_slug, defect_id):
+        team, project, defect = DefectDetailView()._get_defect(slug, project_slug, defect_id, request.user)
+        _require_write(request.user, project)
+        s = DefectCommentSerializer(data=request.data)
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        comment = s.save(defect=defect, author=request.user)
+        jira.queue_comment(comment)
+        interested = {u for u in (defect.assigned_to, defect.reported_by) if u and u != request.user}
+        _log_activity(project, team, request.user, 'defect_comment',
+                      f'Commentaire sur {defect.ticket_number} "{defect.title}"', target_users=list(interested))
+        return Response(DefectCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+
+
+class DefectHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug, defect_id):
+        _, _, defect = DefectDetailView()._get_defect(slug, project_slug, defect_id, request.user)
+        data = DefectHistorySerializer(defect.history.select_related('actor'), many=True).data
+        return Response({'results': data, 'count': len(data)})
 
 
 class DefectStatsView(APIView):
@@ -608,27 +771,134 @@ class DefectStatsView(APIView):
 
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        defects = Defect.objects.filter(project=project)
-        total = defects.count()
-        data = {
-            'total': total,
-            'open': defects.filter(status='open').count(),
-            'in_progress': defects.filter(status='in_progress').count(),
-            'resolved': defects.filter(status='resolved').count(),
-            'closed': defects.filter(status='closed').count(),
-            'critical': defects.filter(severity='critical').count(),
-            'major': defects.filter(severity='major').count(),
-            'minor': defects.filter(severity='minor').count(),
-            'by_severity': {
-                s: defects.filter(severity=s).count()
-                for s in ['critical', 'major', 'minor', 'trivial']
-            },
-            'by_priority': {
-                p: defects.filter(priority=p).count()
-                for p in ['high', 'medium', 'low']
-            },
-        }
-        return Response(data)
+        sprints = _sprints_param(request, project)
+        return Response(analytics.defect_stats(analytics.scope_defects(project, sprints)))
+
+
+class RegressionListView(APIView):
+    """Cas précédemment « Passé » puis « Échoué », avec leurs anomalies."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        rows = analytics.list_regressions(project, _sprints_param(request, project))
+        return Response({'results': rows, 'count': len(rows), 'active': sum(r['is_active'] for r in rows)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEMBRES ASSIGNABLES, PERFORMANCE, ÉVOLUTION & RAPPORTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sprints_param(request, project):
+    """`?sprints=id1,id2` (ou paramètre répété) → liste de Sprint du projet ; absent → None (projet entier)."""
+    raw = [v.strip() for part in request.query_params.getlist('sprints') for v in part.split(',') if v.strip()]
+    if not raw:
+        return None
+    ids = {_uuid_or_400(v, 'sprints') for v in raw}
+    sprints = list(Sprint.objects.filter(project=project, id__in=ids).order_by('start_date', 'created_at'))
+    if len(sprints) != len(ids):
+        raise _bad_request('sprints', "Un ou plusieurs sprints n'appartiennent pas à ce projet.")
+    return sprints
+
+
+class AssignableMembersView(APIView):
+    """Tous les membres de l'équipe pouvant recevoir des cas de test du projet."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        results = [{
+            'user': UserPublicSerializer(tm.user).data,
+            'team_role': tm.role,
+            'project_member_id': str(pm.id) if pm else None,
+            'in_project': pm is not None,
+        } for tm, pm in assignable_members(project)]
+        return Response({'results': results, 'count': len(results)})
+
+
+class ProjectPerformanceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        sprints = _sprints_param(request, project)
+        return Response({
+            **analytics.project_performance(project, sprints),
+            'sprints': analytics.sprint_trend(project, sprints),
+        })
+
+
+class ProjectEvolutionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        return Response(analytics.project_evolution(project, _sprints_param(request, project)))
+
+
+class TeamPerformanceView(APIView):
+    """Comparaison du niveau de performance et de l'évolution de chaque projet visible de l'équipe."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug):
+        team = get_object_or_404(Team, slug=slug)
+        if not team.is_member(request.user):
+            return Response({'error': 'Accès refusé.'}, status=status.HTTP_403_FORBIDDEN)
+        results = []
+        for project in Project.objects.filter(team=team).select_related('team'):
+            if not can_view_project(request.user, project):
+                continue
+            evolution = analytics.project_evolution(project)
+            results.append({
+                'project': {'id': str(project.id), 'name': project.name, 'slug': project.slug,
+                            'color': project.color, 'status': project.status},
+                'performance': analytics.project_performance(project),
+                'trend': evolution['trend'],
+                'evolution': [{'date': p['date'], 'success_rate': p['success_rate'],
+                               'execution_rate': p['execution_rate']} for p in evolution['points']],
+            })
+        results.sort(key=lambda r: (r['performance']['score'] is None, -(r['performance']['score'] or 0)))
+        return Response({'results': results, 'count': len(results)})
+
+
+class ProjectReportView(APIView):
+    """Rapport (JSON) d'un projet, d'un sprint ou d'une sélection de sprints."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        return Response(analytics.build_report(project, _sprints_param(request, project)))
+
+
+def _report_pdf_response(request, project, sprints):
+    from apps.teams.reports import generate_project_report
+    pdf = generate_project_report(project, sprints, request.user.get_full_name() or request.user.username)
+    if sprints is None:
+        suffix = 'projet'
+    elif len(sprints) == 1:
+        suffix = slugify(sprints[0].name) or 'sprint'
+    else:
+        suffix = f'{len(sprints)}-sprints'
+    response = HttpResponse(pdf, content_type='application/pdf')
+    response['Content-Disposition'] = (
+        f'attachment; filename="rapport-{project.slug}-{suffix}-{timezone.localdate():%Y%m%d}.pdf"')
+    return response
+
+
+class ProjectReportPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug):
+        team, project = _get_team_and_project(slug, project_slug, request.user)
+        return _report_pdf_response(request, project, _sprints_param(request, project))
+
+
+class SprintReportPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug, project_slug, sprint_id):
+        _, project, sprint = SprintDetailView()._get_sprint(slug, project_slug, sprint_id, request.user)
+        return _report_pdf_response(request, project, [sprint])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -643,7 +913,10 @@ class WeeklyReportListCreateView(APIView):
         if not team.is_member(request.user):
             return Response({'error': 'Accès refusé.'}, status=status.HTTP_403_FORBIDDEN)
 
-        target_user_id = request.query_params.get('user_id', request.user.id)
+        target_user_id = _int_or_400(request.query_params.get('user_id', request.user.id), 'user_id')
+        if target_user_id != request.user.id and not team.is_admin(request.user):
+            return Response({'error': "Seuls les responsables peuvent consulter les rapports d'un autre membre."},
+                            status=status.HTTP_403_FORBIDDEN)
         reports = WeeklyReport.objects.filter(team=team, user_id=target_user_id).select_related('user')
         s = WeeklyReportSerializer(reports, many=True, context={'request': request})
         return Response({'results': s.data, 'count': len(s.data)})
@@ -655,17 +928,12 @@ class WeeklyReportListCreateView(APIView):
 
         # Auto-compute week start/end if not provided
         data = request.data.copy()
-        if 'week_start' not in data:
-            today = date.today()
-            data['week_start'] = today - timedelta(days=today.weekday())
-        if 'week_end' not in data:
-            ws = date.fromisoformat(str(data['week_start'])) if isinstance(data['week_start'], str) else data['week_start']
-            data['week_end'] = (ws if isinstance(ws, date) else ws) + timedelta(days=6)
-
-        if isinstance(data['week_start'], str):
-            data['week_start'] = date.fromisoformat(data['week_start'])
-        if isinstance(data['week_end'], str):
-            data['week_end'] = date.fromisoformat(data['week_end'])
+        today = timezone.localdate()
+        data['week_start'] = _date_or_400(data.get('week_start'), 'week_start') or (
+            today - timedelta(days=today.weekday()))
+        data['week_end'] = _date_or_400(data.get('week_end'), 'week_end') or (
+            data['week_start'] + timedelta(days=6))
+        wants_submit = data.get('status') == WeeklyReport.Status.SUBMITTED
 
         report, created = WeeklyReport.objects.get_or_create(
             user=request.user,
@@ -677,19 +945,19 @@ class WeeklyReportListCreateView(APIView):
                 'blockers': data.get('blockers', ''),
                 'next_week_plans': data.get('next_week_plans', ''),
                 'additional_notes': data.get('additional_notes', ''),
-                'status': data.get('status', 'draft'),
             }
         )
+        already_submitted = report.status == WeeklyReport.Status.SUBMITTED
         if not created:
             for field in ['accomplishments', 'blockers', 'next_week_plans', 'additional_notes']:
                 if field in data:
                     setattr(report, field, data[field])
-            if 'status' in data and data['status'] == 'submitted':
-                report.submit()
-            else:
-                report.save()
+        if wants_submit and not already_submitted:
+            report.submit()
+        elif not created:
+            report.save()
 
-        if report.status == 'submitted':
+        if report.status == 'submitted' and not already_submitted:
             # Notify team leads/admins
             admin_members = TeamMember.objects.filter(
                 team=team, role__in=['owner', 'admin']
@@ -712,8 +980,7 @@ class WeeklyReportDetailView(APIView):
         team = get_object_or_404(Team, slug=slug)
         report = get_object_or_404(WeeklyReport, id=report_id, team=team)
         if report.user != user and not team.is_admin(user):
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("Vous ne pouvez pas modifier ce rapport.")
+            raise PermissionDenied("Vous ne pouvez pas consulter ce rapport.")
         return team, report
 
     def get(self, request, slug, report_id):
@@ -722,6 +989,8 @@ class WeeklyReportDetailView(APIView):
 
     def patch(self, request, slug, report_id):
         team, report = self._get_report(slug, report_id, request.user)
+        if report.user != request.user:
+            return Response({'error': 'Seul son auteur peut modifier un rapport.'}, status=status.HTTP_403_FORBIDDEN)
         allowed = ['accomplishments', 'blockers', 'next_week_plans', 'additional_notes']
         for field in allowed:
             if field in request.data:
@@ -772,7 +1041,7 @@ class MemberProgressView(APIView):
         members = ProjectMember.objects.filter(project=project).select_related('user')
         result = []
         for pm in members:
-            assignments = UseCaseAssignment.objects.filter(assigned_to=pm).select_related('use_case')
+            assignments = _assignments(assigned_to=pm)
             total = assignments.count()
             passed = assignments.filter(status='Passé').count()
             failed = assignments.filter(status='Échoué').count()
@@ -797,15 +1066,33 @@ class MemberProgressView(APIView):
 # ACTIVITY / NOTIFICATIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _visible_activities(user):
+    """Notifications ciblées + activité des équipes de l'utilisateur, hors projets privés inaccessibles."""
+    from apps.teams.models import TeamMember
+    memberships = TeamMember.objects.filter(user=user)
+    managed = memberships.filter(role__in=['owner', 'admin']).values('team_id')
+    visible_project = (
+        Q(project__isnull=True) | ~Q(project__visibility='private')
+        | Q(project__team_id__in=managed)
+        | Q(project_id__in=ProjectMember.objects.filter(user=user).values('project_id'))
+    )
+    ids = ActivityLog.objects.filter(
+        Q(target_users=user) | (Q(team_id__in=memberships.values('team_id')) & visible_project)
+    ).values('id')
+    return ActivityLog.objects.filter(id__in=ids)
+
+
+def _unread(activities, user):
+    return activities.exclude(read_by=user).exclude(actor=user)
+
+
 class NotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = ActivityLog.objects.filter(
-            Q(target_users=request.user) | Q(team__isnull=False)
-        ).distinct().select_related('actor', 'project')
-        unread_count = qs.filter(is_read=False).count()
-        activities = qs[:50]
+        qs = _visible_activities(request.user)
+        unread_count = _unread(qs, request.user).count()
+        activities = qs.select_related('actor', 'project').prefetch_related('read_by')[:50]
         s = ActivityLogSerializer(activities, many=True, context={'request': request})
         return Response({
             'results': s.data,
@@ -817,9 +1104,9 @@ class NotificationReadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, notification_id):
-        activity = get_object_or_404(ActivityLog, id=notification_id)
-        activity.is_read = True
-        activity.save()
+        activity = get_object_or_404(_visible_activities(request.user), id=notification_id)
+        activity.read_by.add(request.user)
+        ActivityLog.objects.filter(pk=activity.pk).update(is_read=True)
         return Response({'detail': 'Marqué comme lu.'})
 
 
@@ -827,7 +1114,9 @@ class MarkAllNotificationsReadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        ActivityLog.objects.filter(target_users=request.user, is_read=False).update(is_read=True)
+        ids = list(_unread(_visible_activities(request.user), request.user).values_list('id', flat=True))
+        request.user.read_notifications.add(*ids)
+        ActivityLog.objects.filter(id__in=ids).update(is_read=True)
         return Response({'detail': 'Tout marqué comme lu.'})
 
 
@@ -866,8 +1155,8 @@ class UnassignedUseCasesView(APIView):
         sprint_id = request.query_params.get('sprint')
         assignments = UseCaseAssignment.objects.filter(use_case__project=project)
         if sprint_id:
-            get_object_or_404(Sprint, id=sprint_id, project=project)
-            assignments = assignments.filter(sprint_id=sprint_id)
+            get_object_or_404(Sprint, id=_uuid_or_400(sprint_id, 'sprint'), project=project)
+            assignments = assignments.filter(sprint_id=sprint_id, assigned_to__isnull=False)
         assigned_uc_ids = assignments.values_list('use_case_id', flat=True)
         unassigned = all_ucs.exclude(id__in=assigned_uc_ids)
         from apps.teams.serializers import ExtractedUseCaseSerializerBasic
@@ -884,7 +1173,7 @@ class UseCaseDetailView(APIView):
 
     def get(self, request, slug, project_slug, assignment_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
+        assignment = get_object_or_404(_assignments(use_case__project=project), id=assignment_id)
         uc = assignment.use_case
         from apps.api.serializers import ExtractedUseCaseSerializer
         screenshots = UseCaseScreenshot.objects.filter(assignment=assignment)
@@ -892,7 +1181,7 @@ class UseCaseDetailView(APIView):
         return Response({
             'assignment': UseCaseAssignmentSerializer(assignment, context={'request': request}).data,
             'use_case': ExtractedUseCaseSerializer(uc).data,
-            'screenshots': UseCaseScreenshotSerializer(screenshots, many=True).data,
+            'screenshots': UseCaseScreenshotSerializer(screenshots, many=True, context={'request': request}).data,
             'comments': UseCaseCommentSerializer(comments, many=True).data,
         })
 
@@ -914,16 +1203,15 @@ class UseCaseScreenshotListCreateView(APIView):
 
     def post(self, request, slug, project_slug, assignment_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
+        _require_write(request.user, project)
         assignment = get_object_or_404(UseCaseAssignment, id=assignment_id, use_case__project=project)
-        image = request.FILES.get('image')
-        if not image:
+        if not request.FILES.get('image'):
             return Response({'error': 'Image requise.'}, status=status.HTTP_400_BAD_REQUEST)
-        screenshot = UseCaseScreenshot.objects.create(
-            assignment=assignment,
-            image=image,
-            caption=request.data.get('caption', ''),
-            uploaded_by=request.user,
-        )
+        s = UseCaseScreenshotSerializer(data={'assignment': assignment.id, 'image': request.FILES['image'],
+                                              'caption': request.data.get('caption', '')})
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        screenshot = s.save(uploaded_by=request.user)
         _log_activity(project, team, request.user, 'screenshot_uploaded',
                       f'Capture ajoutée à UC#{assignment.use_case.order}',
                       metadata={'assignment_id': str(assignment.id), 'screenshot_id': str(screenshot.id)})
@@ -936,7 +1224,8 @@ class UseCaseScreenshotDeleteView(APIView):
 
     def delete(self, request, slug, project_slug, assignment_id, screenshot_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        screenshot = get_object_or_404(UseCaseScreenshot, id=screenshot_id,
+        _require_write(request.user, project)
+        screenshot = get_object_or_404(UseCaseScreenshot, id=screenshot_id, assignment_id=assignment_id,
                                        assignment__use_case__project=project)
         screenshot.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -952,9 +1241,7 @@ class SprintCSVExportView(APIView):
     def get(self, request, slug, project_slug, sprint_id):
         team, project = _get_team_and_project(slug, project_slug, request.user)
         sprint = get_object_or_404(Sprint, id=sprint_id, project=project)
-        assignments = UseCaseAssignment.objects.filter(sprint=sprint).select_related(
-            'use_case', 'assigned_to__user'
-        ).order_by('use_case__order')
+        assignments = _assignments(sprint=sprint).order_by('use_case__case_number')
 
         output = io.StringIO()
         writer = csv.writer(output)
@@ -974,10 +1261,11 @@ class SprintCSVExportView(APIView):
                 uc.expected_results,
                 uc.observed_results,
                 (a.assigned_to.user.get_full_name() or a.assigned_to.user.username) if a.assigned_to_id else 'Non assigné',
-                uc.status,
+                a.effective_status,
                 'Oui' if uc.is_automated else 'Non',
             ])
 
         response = HttpResponse(output.getvalue(), content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = f'attachment; filename="recettes_{sprint.name}_{sprint.start_date}.csv"'
+        name = slugify(sprint.name) or 'sprint'
+        response['Content-Disposition'] = f'attachment; filename="recettes_{name}_{sprint.start_date}.csv"'
         return response

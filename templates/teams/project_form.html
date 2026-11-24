@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+
+{% block title %}Nouveau projet — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:640px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1 style="margin-bottom:1rem;">Nouveau projet — {{ team.name }}</h1>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <p style="margin-bottom:1rem;"><label>Nom<br><input type="text" name="name" required style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Description<br><input type="text" name="description"  style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Visibilité
+            <select name="visibility"><option value="team">Équipe</option><option value="private">Privé</option><option value="public">Public</option></select></label></p>
+        <p style="margin-bottom:1rem;"><label>Icône
+            <select name="icon">{% for icon in ICONS %}<option value="{{ icon }}">{{ icon }}</option>{% endfor %}</select></label>
+            <label>Couleur
+            <select name="color">{% for color in COLORS %}<option value="{{ color }}">{{ color }}</option>{% endfor %}</select></label></p>
+        <button class="btn btn-primary" type="submit">Créer le projet</button>
+    </form>
+</section>
+{% endblock %}

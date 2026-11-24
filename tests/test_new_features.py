@@ -14,13 +14,6 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 
-def _weasyprint_available():
-    try:
-        import weasyprint  # noqa: F401
-        return True
-    except OSError:
-        return False
-
 from apps.core.models import ConversionJob, ExtractedUseCase
 from apps.teams.models import Team, TeamMember, Project, ProjectMember
 
@@ -88,7 +81,8 @@ def auth(client, user):
 # BULK STATUS UPDATE
 # ─────────────────────────────────────────────────────────────────────────────
 class TestUseCaseBulkStatusAPI:
-    def test_bulk_update_status(self, client, done_job_with_ucs):
+    def test_bulk_update_status(self, client, owner, done_job_with_ucs):
+        auth(client, owner)
         job, ucs = done_job_with_ucs
         uc_ids = [str(uc.id) for uc in ucs[:2]]
 
@@ -107,7 +101,8 @@ class TestUseCaseBulkStatusAPI:
         assert ucs[1].status == 'Passé'
         assert ucs[2].status == 'À tester'
 
-    def test_bulk_update_invalid_status(self, client, done_job_with_ucs):
+    def test_bulk_update_invalid_status(self, client, owner, done_job_with_ucs):
+        auth(client, owner)
         job, ucs = done_job_with_ucs
         uc_ids = [str(uc.id) for uc in ucs[:2]]
 
@@ -118,7 +113,8 @@ class TestUseCaseBulkStatusAPI:
 
         assert resp.status_code == 400
 
-    def test_bulk_update_empty_uc_ids(self, client, done_job_with_ucs):
+    def test_bulk_update_empty_uc_ids(self, client, owner, done_job_with_ucs):
+        auth(client, owner)
         job, _ = done_job_with_ucs
 
         resp = client.post(f'/api/jobs/{job.id}/bulk-status/', {
@@ -211,7 +207,6 @@ class TestProjectMemberAssignAPI:
 # PDF REPORTS
 # ─────────────────────────────────────────────────────────────────────────────
 class TestDailyScrumReportAPI:
-    @pytest.mark.skipif(not _weasyprint_available(), reason='WeasyPrint requires GTK3 runtime on Windows')
     def test_daily_scrum_returns_pdf(self, client, owner, team):
         auth(client, owner)
         resp = client.get(f'/api/teams/{team.slug}/reports/daily-scrum/')
@@ -229,7 +224,6 @@ class TestDailyScrumReportAPI:
 
 
 class TestWeeklyReportAPI:
-    @pytest.mark.skipif(not _weasyprint_available(), reason='WeasyPrint requires GTK3 runtime on Windows')
     def test_weekly_report_returns_pdf(self, client, owner, team):
         auth(client, owner)
         resp = client.get(f'/api/teams/{team.slug}/reports/weekly/')

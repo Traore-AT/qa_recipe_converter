@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import automation_views, views
 
 app_name = 'qamanagement'
 
@@ -25,6 +25,47 @@ urlpatterns = [
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/tickets/<uuid:ticket_id>/comments/',
          views.SprintCaseCommentListCreateView.as_view(), name='sprint-ticket-comments'),
 
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/report/pdf/',
+         views.SprintReportPDFView.as_view(), name='sprint-report-pdf'),
+
+    # ── Performance, évolution & rapports ────────────────────────────────────
+    path('teams/<slug:slug>/performance/',
+         views.TeamPerformanceView.as_view(), name='team-performance'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/performance/',
+         views.ProjectPerformanceView.as_view(), name='project-performance'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/evolution/',
+         views.ProjectEvolutionView.as_view(), name='project-evolution'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/report/',
+         views.ProjectReportView.as_view(), name='project-report'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/report/pdf/',
+         views.ProjectReportPDFView.as_view(), name='project-report-pdf'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/regressions/',
+         views.RegressionListView.as_view(), name='regression-list'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/assignable-members/',
+         views.AssignableMembersView.as_view(), name='assignable-members'),
+
+    # ── Automatisation & intégrations ────────────────────────────────────────
+    path('teams/<slug:slug>/projects/<slug:project_slug>/qa-settings/',
+         automation_views.QASettingsView.as_view(), name='qa-settings'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/report/xlsx/',
+         automation_views.ProjectReportExcelView.as_view(), name='project-report-xlsx'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/defects/export/xlsx/',
+         automation_views.DefectExcelView.as_view(), name='defect-export-xlsx'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/report/send/',
+         automation_views.SprintReportSendView.as_view(), name='sprint-report-send'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/carry-over/',
+         automation_views.CarryOverView.as_view(), name='sprint-carry-over'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/regression-campaign/',
+         automation_views.RegressionCampaignView.as_view(), name='regression-campaign'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/test-results/import/',
+         automation_views.TestResultsImportView.as_view(), name='test-results-import'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/jira/sync/',
+         automation_views.JiraSyncView.as_view(), name='jira-sync'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/defects/<uuid:defect_id>/jira/',
+         automation_views.DefectJiraPushView.as_view(), name='defect-jira-push'),
+    path('integrations/jira/webhook/',
+         automation_views.JiraWebhookView.as_view(), name='jira-webhook'),
+
     # ── Use Case Assignments ─────────────────────────────────────────────────
     path('teams/<slug:slug>/projects/<slug:project_slug>/assignments/',
          views.AssignmentListCreateView.as_view(), name='assignment-list'),
@@ -46,6 +87,10 @@ urlpatterns = [
          views.DefectListCreateView.as_view(), name='defect-list'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/defects/<uuid:defect_id>/',
          views.DefectDetailView.as_view(), name='defect-detail'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/defects/<uuid:defect_id>/comments/',
+         views.DefectCommentListCreateView.as_view(), name='defect-comments'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/defects/<uuid:defect_id>/history/',
+         views.DefectHistoryView.as_view(), name='defect-history'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/defects/stats/',
          views.DefectStatsView.as_view(), name='defect-stats'),
 

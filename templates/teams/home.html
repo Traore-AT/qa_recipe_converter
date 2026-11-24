@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+
+{% block title %}Mes équipes — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:860px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1 style="margin-bottom:1rem;">Mes équipes</h1>
+    <ul>
+        {% for team in teams %}
+        <li><a href="{% url 'team-page' team.slug %}">{{ team.name }}</a> — {{ team.description|default:"Sans description" }}</li>
+        {% empty %}
+        <li>Vous n'appartenez à aucune équipe.</li>
+        {% endfor %}
+    </ul>
+</section>
+<section class="card" style="max-width:860px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h2 style="margin-bottom:1rem;">Nouvelle équipe</h2>
+    <form method="post">
+        {% csrf_token %}
+        <p style="margin-bottom:1rem;"><label>Nom<br><input type="text" name="name" required style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Description<br><input type="text" name="description"  style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <button class="btn btn-primary" type="submit">Créer l'équipe</button>
+    </form>
+</section>
+{% endblock %}

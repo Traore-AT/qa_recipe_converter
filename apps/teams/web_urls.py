@@ -13,5 +13,5 @@ urlpatterns = [
     path('invitations/<uuid:token>/reject/', web_views.WebInvitationRejectView.as_view(), name='web-invitation-reject'),
     path('<slug:slug>/',                  web_views.TeamDashboardPageView.as_view(), name='team-page'),
     path('<slug:slug>/projects/new/',     web_views.CreateProjectPageView.as_view(), name='project-new'),
-    path('<slug:slug>/<slug:project_slug>/', web_views.ProjectPageView.as_view(), name='project-page'),
+    path('<slug:slug>/projects/<slug:project_slug>/', web_views.ProjectPageView.as_view(), name='project-page'),
 ]

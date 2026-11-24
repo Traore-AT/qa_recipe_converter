@@ -21,7 +21,7 @@ from .serializers import (
     TeamMemberSerializer, TeamInvitationSerializer, InviteMemberSerializer,
     UpdateMemberRoleSerializer,
     OwnerCreateMemberSerializer,
-    ProjectSerializer, ProjectCreateSerializer,
+    ProjectSerializer, ProjectCreateSerializer, ProjectUpdateSerializer,
     ProjectMemberSerializer, AddProjectMemberSerializer,
     ExtractedUseCaseSerializerBasic,
 )
@@ -193,13 +193,10 @@ class TeamDetailView(APIView):
         if not team.is_admin(request.user):
             return Response({'error': 'Requiert rôle owner ou admin.'},
                             status=status.HTTP_403_FORBIDDEN)
-        # Allow updating name, description, avatar
-        allowed = {k: v for k, v in request.data.items() if k in ('name', 'description', 'avatar')}
-        for k, v in allowed.items():
-            setattr(team, k, v)
-        if 'avatar' in request.FILES:
-            team.avatar = request.FILES['avatar']
-        team.save()
+        s = TeamCreateSerializer(team, data=request.data, partial=True, context={'request': request})
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        team = s.save()
         return Response(TeamSerializer(team, context={'request': request}).data)
 
     def delete(self, request, slug):
@@ -240,13 +237,9 @@ class TeamMemberListView(APIView):
         role  = s.validated_data['role']
 
         # Check if user already member
-        try:
-            target_user = User.objects.get(email=email)
-            if team.is_member(target_user):
-                return Response({'error': 'Cet utilisateur est déjà membre.'},
-                                status=status.HTTP_400_BAD_REQUEST)
-        except User.DoesNotExist:
-            target_user = None
+        if TeamMember.objects.filter(team=team, user__email__iexact=email).exists():
+            return Response({'error': 'Cet utilisateur est déjà membre.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # Check for pending invitation
         existing = TeamInvitation.objects.filter(
@@ -348,7 +341,7 @@ class InvitationDetailView(APIView):
 
     def get(self, request, token):
         invitation = get_object_or_404(TeamInvitation, token=token)
-        if request.user.email != invitation.email:
+        if request.user.email.lower() != invitation.email.lower():
             return Response(
                 {'error': 'Cette invitation est destinée à une autre adresse email.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -370,7 +363,7 @@ class InvitationAcceptView(APIView):
             )
 
         # Auto-add user if email matches
-        if request.user.email != invitation.email:
+        if request.user.email.lower() != invitation.email.lower():
             return Response(
                 {'error': 'Cette invitation est destinée à une autre adresse email.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -400,6 +393,9 @@ class InvitationRejectView(APIView):
 
     def post(self, request, token):
         invitation = get_object_or_404(TeamInvitation, token=token)
+        if request.user.email.lower() != invitation.email.lower():
+            return Response({'error': 'Cette invitation est destinée à une autre adresse email.'},
+                            status=status.HTTP_403_FORBIDDEN)
         if not invitation.is_usable:
             return Response({'error': 'Invitation expirée ou déjà traitée.'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -493,17 +489,16 @@ class ProjectDetailView(APIView):
         if not can_manage_project(request.user, project):
             return Response({'error': 'Requiert rôle owner/admin ou lead projet.'},
                             status=status.HTTP_403_FORBIDDEN)
-        if project.is_archived:
+        # Un projet archivé est en lecture seule, mais peut être réactivé.
+        reactivation = set(request.data.keys()) == {'status'} and request.data['status'] != Project.Status.ARCHIVED
+        if project.is_archived and not reactivation:
             return Response({'error': 'Projet archivé — lecture seule.'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        allowed_fields = ['name', 'description', 'icon', 'color', 'visibility', 'status']
-        for field in allowed_fields:
-            if field in request.data:
-                setattr(project, field, request.data[field])
-        if 'avatar' in request.FILES:
-            project.avatar = request.FILES['avatar']
-        project.save()
+        s = ProjectUpdateSerializer(project, data=request.data, partial=True, context={'request': request})
+        if not s.is_valid():
+            return Response(s.errors, status=status.HTTP_400_BAD_REQUEST)
+        project = s.save()
         return Response(ProjectSerializer(project, context={'request': request}).data)
 
     def delete(self, request, slug, project_slug):
@@ -754,7 +749,8 @@ class DailyScrumReportView(APIView):
             return Response({'error': 'Accès refusé.'}, status=status.HTTP_403_FORBIDDEN)
 
         from .reports import generate_daily_scrum
-        pdf = generate_daily_scrum(team, generated_by=request.user.get_full_name() or request.user.username)
+        pdf = generate_daily_scrum(team, generated_by=request.user.get_full_name() or request.user.username,
+                                   user=request.user)
 
         from django.http import HttpResponse
         response = HttpResponse(pdf, content_type='application/pdf')
@@ -771,7 +767,8 @@ class WeeklyReportView(APIView):
             return Response({'error': 'Accès refusé.'}, status=status.HTTP_403_FORBIDDEN)
 
         from .reports import generate_weekly_report
-        pdf = generate_weekly_report(team, generated_by=request.user.get_full_name() or request.user.username)
+        pdf = generate_weekly_report(team, generated_by=request.user.get_full_name() or request.user.username,
+                                     user=request.user)
 
         from django.http import HttpResponse
         response = HttpResponse(pdf, content_type='application/pdf')

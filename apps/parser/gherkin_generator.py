@@ -46,6 +46,18 @@ def _format_step(raw: str, keyword: str = "And") -> str:
     return f"    {keyword} {raw}"
 
 
+def _case_tag(uc) -> str:
+    """Identifiant stable du cas dans le projet (CAS-001), utilisé pour réimporter les résultats."""
+    number = getattr(uc, 'case_number', 0)
+    return f'CAS-{number:03d}' if isinstance(number, int) and number else ''
+
+
+def _cucumber_text(text: str) -> str:
+    """Échappe un libellé pour une chaîne JS contenant une expression Cucumber."""
+    escaped = re.sub(r'([\\\\({/])', r'\\\1', text)
+    return escaped.replace('\\', '\\\\').replace("'", "\\'")
+
+
 def generate_feature_file(uc) -> str:
     """
     Generate the content of a .feature file for a single use case.
@@ -58,7 +70,11 @@ def generate_feature_file(uc) -> str:
     lines.append(f"# Fichier généré automatiquement par QA Recipe Converter")
     lines.append(f"# Use Case : {uc_id}")
     lines.append("")
-    lines.append(f"Feature: {uc_id} — {description}")
+    tag = _case_tag(uc)
+    if tag:
+        lines.append(f"@{tag}")
+    title = ' '.join(description.split())
+    lines.append(f"Feature: {uc_id} — {title}")
     lines.append("")
 
     # Background (preconditions)
@@ -71,7 +87,7 @@ def generate_feature_file(uc) -> str:
         lines.append("")
 
     # Scenario
-    lines.append(f"  Scenario: {description}")
+    lines.append(f"  Scenario: {f'[{tag}] ' if tag else ''}{title}")
 
     # Steps (Given/When/Then)
     step_lines = _split_lines(uc.steps)
@@ -111,36 +127,25 @@ def generate_cypress_step_definitions(uc) -> str:
     lines.append(f"// Step definitions — {uc_id}")
     lines.append(f"// Généré par QA Recipe Converter")
     lines.append("")
-    lines.append("import {{ Given, When, Then, And }} from '@badeball/cypress-cucumber-preprocessor';")
+    lines.append("import { Given, When, Then } from '@badeball/cypress-cucumber-preprocessor';")
     lines.append("")
 
-    # Preconditions
-    for p in precond_lines:
-        if p != '(non défini)':
-            safe = p.replace("'", "\\'")
-            lines.append(f"Given('{safe}', () => {{")
-            lines.append(f"  // TODO: Implémenter la précondition")
-            lines.append(f"}});")
-            lines.append("")
+    # « And » n'est pas une définition d'étape, et un libellé ne peut être défini qu'une fois.
+    defined = set()
 
-    # Steps
-    for i, step in enumerate(step_lines):
-        safe = step.replace("'", "\\'")
-        kw = "When" if i == 0 else "And"
-        lines.append(f"{kw}('{safe}', () => {{")
-        lines.append(f"  // TODO: Implémenter l'étape")
-        lines.append(f"}});")
-        lines.append("")
+    def define(keyword, text, todo):
+        text = text[0].upper() + text[1:]
+        if text == '(non défini)' or text in defined:
+            return
+        defined.add(text)
+        lines.extend([f"{keyword}('{_cucumber_text(text)}', () => {{", f"  // TODO: {todo}", "});", ""])
 
-    # Expected results
-    for i, exp in enumerate(expected_lines):
-        if exp != '(non défini)':
-            safe = exp.replace("'", "\\'")
-            kw = "Then" if i == 0 else "And"
-            lines.append(f"{kw}('{safe}', () => {{")
-            lines.append(f"  // TODO: Vérifier le résultat attendu")
-            lines.append(f"}});")
-            lines.append("")
+    for text in precond_lines:
+        define('Given', text, 'Implémenter la précondition')
+    for text in step_lines:
+        define('When', text, "Implémenter l'étape")
+    for text in expected_lines:
+        define('Then', text, 'Vérifier le résultat attendu')
 
     return "\n".join(lines)
 
@@ -265,7 +270,8 @@ def _package_json() -> str:
   "scripts": {
     "cy:open": "cypress open",
     "cy:run": "cypress run",
-    "cy:run:headed": "cypress run --headed"
+    "cy:run:headed": "cypress run --headed",
+    "cy:report": "cypress run --reporter junit --reporter-options mochaFile=results/[hash].xml"
   },
   "devDependencies": {
     "cypress": "^13.6.0",
@@ -275,7 +281,7 @@ def _package_json() -> str:
   },
   "cypress-cucumber-preprocessor": {
     "nonGlobalStepDefinitions": false,
-    "stepDefinitions": "cypress/e2e/step_definitions/**/*.js"
+    "stepDefinitions": "cypress/e2e/step_definitions/[filepath].js"
   }
 }
 """
@@ -323,6 +329,9 @@ npm run cy:open
 
 # 3. Lancer tous les tests (mode headless)
 npm run cy:run
+
+# 4. Produire les résultats à importer dans QA Recipe Converter (results/*.xml)
+npm run cy:report
 ```
 
 ## 📁 Structure

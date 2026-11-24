@@ -8,6 +8,7 @@ import platform
 import zipfile
 import tempfile
 import os
+from contextlib import ExitStack
 
 from django.shortcuts   import render, redirect, get_object_or_404
 from django.http        import HttpResponse, JsonResponse
@@ -15,6 +16,8 @@ from django.views       import View
 from django.contrib     import messages
 from django.utils       import timezone
 
+from .access  import check_job_access
+from .files   import local_copy
 from .models  import ConversionJob, ExtractedUseCase
 from .forms   import UploadForm
 from apps.parser.docx_parser       import DocxParser
@@ -45,6 +48,13 @@ def _uc_to_dict(uc):
     }
 
 
+def _recent_jobs(user):
+    """Conversions de l'utilisateur connecté (jamais celles des autres)."""
+    if not user.is_authenticated:
+        return ConversionJob.objects.none()
+    return ConversionJob.objects.filter(status=ConversionJob.Status.DONE, uploaded_by=user)[:5]
+
+
 # ── IndexView ──────────────────────────────────────────────────────────────────
 
 class IndexView(View):
@@ -52,7 +62,7 @@ class IndexView(View):
 
     def get(self, request):
         form       = UploadForm()
-        recent_jobs = ConversionJob.objects.filter(status=ConversionJob.Status.DONE)[:5]
+        recent_jobs = _recent_jobs(request.user)
         return render(request, self.template_name, {
             'form': form,
             'recent_jobs': recent_jobs,
@@ -63,7 +73,7 @@ class IndexView(View):
         if not form.is_valid():
             return render(request, self.template_name, {
                 'form': form,
-                'recent_jobs': ConversionJob.objects.filter(status=ConversionJob.Status.DONE)[:5],
+                'recent_jobs': _recent_jobs(request.user),
             })
 
         word_file      = form.cleaned_data['word_file']
@@ -80,11 +90,12 @@ class IndexView(View):
             excel_filename  = excel_filename,
             company_logo    = company_logo,
             status          = ConversionJob.Status.PROCESSING,
+            uploaded_by     = request.user if request.user.is_authenticated else None,
         )
 
         try:
-            parser    = DocxParser(job.word_file.path)
-            use_cases = parser.extract_use_cases()
+            with local_copy(job.word_file) as path:
+                use_cases = DocxParser(path).extract_use_cases()
 
             if not use_cases:
                 job.status        = ConversionJob.Status.ERROR
@@ -126,6 +137,7 @@ class PreviewView(View):
 
     def get(self, request, job_id):
         job       = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
         automated_count = use_cases.filter(is_automated=True).count()
         return render(request, self.template_name, {
@@ -138,6 +150,7 @@ class PreviewView(View):
     def post(self, request, job_id):
         """Save manual edits (JSON body)."""
         job = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job, write=True)
         try:
             data = json.loads(request.body)
 
@@ -151,6 +164,7 @@ class PreviewView(View):
             # ── Update use cases ──────────────────────────────────────────
             for uc_data in data.get('use_cases', []):
                 uc = get_object_or_404(ExtractedUseCase, id=uc_data['id'], job=job)
+                uc._status_actor    = request.user if request.user.is_authenticated else None
                 uc.use_case_text    = uc_data.get('use_case_text',    uc.use_case_text)
                 uc.description      = uc_data.get('description',      uc.description)
                 uc.preconditions    = uc_data.get('preconditions',    uc.preconditions)
@@ -175,23 +189,24 @@ class PreviewView(View):
 class GenerateExcelView(View):
     def get(self, request, job_id):
         job       = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
 
-        logo_path = None
-        if job.company_logo:
-            try:
-                logo_path = job.company_logo.path
-            except Exception:
-                logo_path = None
-
-        generator = ExcelGenerator(
-            use_cases,
-            source_filename = job.source_filename,
-            company_name    = job.company_name,
-            excel_filename  = job.effective_excel_filename,
-            logo_path       = logo_path,
-        )
-        excel_buffer = generator.generate()
+        with ExitStack() as files:
+            logo_path = None
+            if job.company_logo:
+                try:
+                    logo_path = files.enter_context(local_copy(job.company_logo))
+                except Exception:
+                    logger.warning('Logo illisible ignoré : %s', job.company_logo.name)
+            generator = ExcelGenerator(
+                use_cases,
+                source_filename = job.source_filename,
+                company_name    = job.company_name,
+                excel_filename  = job.effective_excel_filename,
+                logo_path       = logo_path,
+            )
+            excel_buffer = generator.generate()
 
         filename = job.effective_excel_filename
         response = HttpResponse(
@@ -209,6 +224,7 @@ class GenerateGherkinView(View):
 
     def get(self, request, job_id):
         job       = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
         mode      = request.GET.get('mode', 'gherkin')  # 'gherkin' | 'cypress'
 
@@ -242,6 +258,7 @@ class OpenVSCodeView(View):
 
     def post(self, request, job_id):
         job       = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
 
         # ── Generate ZIP ──────────────────────────────────────────────────
@@ -295,6 +312,7 @@ class ResultView(View):
 
     def get(self, request, job_id):
         job             = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job)
         automated_count = job.use_cases.filter(is_automated=True).count()
         return render(request, self.template_name, {
             'job':             job,

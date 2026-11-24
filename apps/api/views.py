@@ -7,6 +7,8 @@ import platform
 import zipfile
 import tempfile
 import os
+import shutil
+from contextlib import ExitStack
 import django.core.files
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -15,6 +17,9 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import AllowAny
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import PermissionDenied
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django.utils import timezone
@@ -22,12 +27,15 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 
-from apps.teams.permissions import can_manage_project
+from apps.teams.permissions import can_manage_project, can_view_project, can_write_project
 
+from apps.core.access import check_job_access
+from apps.core.files import local_copy
 from apps.core.models import ConversionJob, ExtractedUseCase
 from apps.core.word_validation import WordFileValidationError, validate_word_upload
 from apps.core.doc_converter import convert_doc_to_docx, is_doc_file, is_libreoffice_available
 from apps.parser.docx_parser import DocxParser
+from apps.qamanagement.notifications import grouped_alerts
 from apps.parser.excel_generator import ExcelGenerator
 from apps.parser.gherkin_generator import generate_gherkin_only_zip, generate_cypress_project_zip
 from apps.parser.file_searcher import search_files
@@ -95,17 +103,22 @@ class UploadAPIView(APIView):
             from apps.teams.models import Project
             try:
                 project = Project.objects.get(id=project_id)
-                job_kwargs['project'] = project
-            except (Project.DoesNotExist, ValueError):
-                pass
+            except (Project.DoesNotExist, ValueError, ValidationError):
+                return Response({'error': 'Projet introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+            if not (can_view_project(request.user, project) and can_write_project(request.user, project)):
+                return Response({'error': "Vous ne pouvez pas importer de recette dans ce projet."},
+                                status=status.HTTP_403_FORBIDDEN)
+            job_kwargs['project'] = project
 
         if request.user.is_authenticated:
             job_kwargs['uploaded_by'] = request.user
 
         job = ConversionJob.objects.create(**job_kwargs)
 
-        file_path = job.word_file.path
+        with local_copy(job.word_file) as file_path:
+            return self._process(job, file_path)
 
+    def _process(self, job, file_path):
         if is_doc_file(file_path):
             if not is_libreoffice_available():
                 job.status = ConversionJob.Status.ERROR
@@ -132,23 +145,19 @@ class UploadAPIView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
             # Remplacer le fichier stocké par la version convertie
+            docx_name = job.source_filename.rsplit('.', 1)[0] + '.docx'
             job.word_file.delete(save=False)
             with open(converted_path, 'rb') as f:
-                job.word_file.save(
-                    job.source_filename.rsplit('.', 1)[0] + '.docx',
-                    django.core.files.File(f),
-                    save=False
-                )
-            job.source_filename = job.word_file.name
+                job.word_file.save(docx_name, django.core.files.File(f), save=False)
+            job.source_filename = docx_name
             job.save()
-            os.unlink(converted_path)
-            os.unlink(file_path)
             try:
-                os.rmdir(os.path.dirname(converted_path))
-            except OSError:
-                pass
-            file_path = job.word_file.path
+                return self._extract(job, converted_path)
+            finally:
+                shutil.rmtree(os.path.dirname(converted_path), ignore_errors=True)
+        return self._extract(job, file_path)
 
+    def _extract(self, job, file_path):
         try:
             parser = DocxParser(file_path)
             use_cases = parser.extract_use_cases()
@@ -206,6 +215,7 @@ class JobDetailAPIView(APIView):
 
     def get(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job)
         serializer = ConversionJobSerializer(job)
         return Response(serializer.data)
 
@@ -233,7 +243,17 @@ class JobListAPIView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        if request.user.is_authenticated:
+        project_id = request.query_params.get('project')
+        if request.user.is_authenticated and project_id:
+            from apps.teams.models import Project
+            try:
+                project = Project.objects.get(id=project_id)
+            except (Project.DoesNotExist, ValueError, ValidationError):
+                return Response({'error': 'Projet introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+            if not can_view_project(request.user, project):
+                raise PermissionDenied('Accès refusé à ce projet.')
+            jobs = ConversionJob.objects.filter(project=project)
+        elif request.user.is_authenticated:
             jobs = ConversionJob.objects.filter(uploaded_by=request.user)
         else:
             jobs = ConversionJob.objects.none()
@@ -250,7 +270,10 @@ class UseCaseUpdateAPIView(APIView):
     permission_classes = [AllowAny]
 
     def patch(self, request, job_id, uc_id):
-        uc = get_object_or_404(ExtractedUseCase, id=uc_id, job_id=job_id)
+        uc = get_object_or_404(ExtractedUseCase.objects.select_related('job__project'), id=uc_id, job_id=job_id)
+        check_job_access(request.user, uc.job, write=True)
+        if request.user.is_authenticated:
+            uc._status_actor = request.user
         serializer = ExtractedUseCaseSerializer(uc, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -258,19 +281,31 @@ class UseCaseUpdateAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _local_path(stack, field_file):
+    """Chemin local d'un fichier optionnel ; None s'il est absent ou illisible."""
+    if not field_file:
+        return None
+    try:
+        return stack.enter_context(local_copy(field_file))
+    except Exception:
+        logger.warning('Fichier illisible ignoré : %s', field_file.name)
+        return None
+
+
 class GenerateExcelAPIView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
 
-        logo_path = None
-        if job.company_logo:
-            try:
-                logo_path = job.company_logo.path
-            except Exception:
-                logo_path = None
+        # Les fichiers distants sont copiés localement le temps de la génération.
+        with ExitStack() as files:
+            return self._generate(job, use_cases, lambda f: _local_path(files, f))
+
+    def _generate(self, job, use_cases, local_path):
+        logo_path = local_path(job.company_logo)
 
         # Build extras dict: comments + screenshots for each use case
         from apps.qamanagement.models import UseCaseComment, UseCaseScreenshot, UseCaseAssignment
@@ -302,11 +337,7 @@ class GenerateExcelAPIView(APIView):
             if uid:
                 if uid not in screenshots_map:
                     screenshots_map[uid] = []
-                img_path = None
-                try:
-                    img_path = s.image.path if s.image else None
-                except Exception:
-                    img_path = None
+                img_path = local_path(s.image)
                 screenshots_map[uid].append({
                     'id': str(s.id),
                     'caption': s.caption or '',
@@ -346,6 +377,7 @@ class GenerateGherkinAPIView(APIView):
 
     def get(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
         mode = request.query_params.get('mode', 'gherkin')
 
@@ -377,7 +409,9 @@ class FileSearchAPIView(APIView):
         extensions = ext_filter if ext_filter else None
 
         try:
-            results = search_files(query=query, extensions=extensions, max_results=15)
+            if not settings.FILE_SEARCH_ROOT:
+                return Response({'results': [], 'count': 0, 'error': 'Recherche locale désactivée sur ce serveur.'})
+            results = search_files(query=query, search_root=settings.FILE_SEARCH_ROOT, extensions=extensions, max_results=15)
             return Response({'results': results, 'count': len(results)})
         except Exception as e:
             logger.exception("File search error")
@@ -390,6 +424,13 @@ class BatchSaveAPIView(APIView):
 
     def post(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job, write=True)
+        actor = request.user if request.user.is_authenticated else None
+        valid_statuses = ExtractedUseCase.UCStatus.values
+        for uc_data in request.data.get('use_cases', []):
+            if 'status' in uc_data and uc_data['status'] not in valid_statuses:
+                return Response({'error': f'Statut invalide. Valides: {", ".join(valid_statuses)}'},
+                                status=status.HTTP_400_BAD_REQUEST)
 
         if 'company_name' in request.data:
             job.company_name = request.data['company_name']
@@ -397,8 +438,15 @@ class BatchSaveAPIView(APIView):
             job.excel_filename = request.data['excel_filename']
         job.save()
 
+        with grouped_alerts():
+            self._save_cases(request, job, actor)
+        automated_count = job.use_cases.filter(is_automated=True).count()
+        return Response({'success': True, 'automated_count': automated_count})
+
+    def _save_cases(self, request, job, actor):
         for uc_data in request.data.get('use_cases', []):
             uc = get_object_or_404(ExtractedUseCase, id=uc_data['id'], job=job)
+            uc._status_actor = actor
             uc.use_case_text    = uc_data.get('use_case_text', uc.use_case_text)
             uc.description      = uc_data.get('description', uc.description)
             uc.preconditions    = uc_data.get('preconditions', uc.preconditions)
@@ -409,9 +457,6 @@ class BatchSaveAPIView(APIView):
             uc.status           = uc_data.get('status', uc.status)
             uc.save()
 
-        automated_count = job.use_cases.filter(is_automated=True).count()
-        return Response({'success': True, 'automated_count': automated_count})
-
 
 class UseCaseBulkStatusAPIView(APIView):
     permission_classes = [AllowAny]
@@ -419,6 +464,7 @@ class UseCaseBulkStatusAPIView(APIView):
 
     def post(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job, write=True)
         uc_ids = request.data.get('uc_ids', [])
         new_status = request.data.get('status')
         valid_statuses = [s.value for s in ExtractedUseCase.UCStatus]
@@ -427,7 +473,14 @@ class UseCaseBulkStatusAPIView(APIView):
             return Response({'error': f'Statut invalide. Valides: {", ".join(valid_statuses)}'},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        updated = ExtractedUseCase.objects.filter(id__in=uc_ids, job=job).update(status=new_status)
+        # Sauvegarde cas par cas : chaque changement alimente l'historique et les sprints.
+        updated = 0
+        with grouped_alerts(), transaction.atomic():
+            for uc in ExtractedUseCase.objects.filter(id__in=uc_ids, job=job):
+                uc.status = new_status
+                uc._status_actor = request.user if request.user.is_authenticated else None
+                uc.save(update_fields=['status'])
+                updated += 1
         return Response({'updated': updated, 'status': new_status})
 
 
@@ -436,6 +489,7 @@ class OpenVSCodeAPIView(APIView):
 
     def post(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all()
 
         zip_buffer = generate_cypress_project_zip(
@@ -480,6 +534,7 @@ class GenerateCSVAPIView(APIView):
 
     def get(self, request, job_id):
         job = get_object_or_404(ConversionJob, id=job_id, status=ConversionJob.Status.DONE)
+        check_job_access(request.user, job)
         use_cases = job.use_cases.all().order_by('order')
 
         output = io.StringIO()

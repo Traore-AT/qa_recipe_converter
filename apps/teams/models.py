@@ -210,6 +210,7 @@ class Project(models.Model):
         passed   = ucs.filter(status='Passé').count()
         failed   = ucs.filter(status='Échoué').count()
         blocked  = ucs.filter(status='Bloqué').count()
+        in_progress = ucs.filter(status='En cours').count()
         not_run  = ucs.filter(status='À tester').count()
         automated = ucs.filter(is_automated=True).count()
         rate     = round(passed / total * 100, 1) if total > 0 else 0
@@ -218,6 +219,7 @@ class Project(models.Model):
             'passed': passed,
             'failed': failed,
             'blocked': blocked,
+            'in_progress': in_progress,
             'not_run': not_run,
             'automated': automated,
             'success_rate': rate,
