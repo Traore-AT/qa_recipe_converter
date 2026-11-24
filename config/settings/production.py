@@ -66,6 +66,11 @@ SECURE_HSTS_PRELOAD = True
 # Absolute base URL used in emails (set to the Render backend URL)
 SITE_URL = _require_env('SITE_URL')
 
+# ── E-mails : SMTP dès qu'un hôte est configuré (sinon console, sans envoi) ──
+FRONTEND_URL = (os.getenv('FRONTEND_URL') or SITE_URL).rstrip('/')
+if os.getenv('EMAIL_HOST'):
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
 # ── Logs d'erreurs 500 visibles dans les logs Render ─────────────────────────
 LOGGING = {
     "version": 1,

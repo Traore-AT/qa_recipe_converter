@@ -1,15 +1,15 @@
 """
 Management command: python manage.py cleanup_old_files
 
-Supprime les tâches de conversion et fichiers associés
-plus anciens que FILE_RETENTION_HOURS (défaut: 1 heure).
+Supprime les conversions anonymes (sans projet ni auteur) et leurs fichiers,
+plus anciennes que FILE_RETENTION_HOURS (défaut: 1 heure). Les recettes rattachées
+à un projet ou à un compte ne sont jamais supprimées.
 
 Usage:
     python manage.py cleanup_old_files
     python manage.py cleanup_old_files --hours 2
     python manage.py cleanup_old_files --dry-run
 """
-import os
 from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -38,7 +38,8 @@ class Command(BaseCommand):
         dry_run = options['dry_run']
         cutoff = timezone.now() - timedelta(hours=hours)
 
-        old_jobs = ConversionJob.objects.filter(created_at__lt=cutoff)
+        old_jobs = ConversionJob.objects.filter(
+            created_at__lt=cutoff, project__isnull=True, uploaded_by__isnull=True)
         count = old_jobs.count()
 
         if count == 0:
@@ -49,13 +50,13 @@ class Command(BaseCommand):
 
         for job in old_jobs:
             # Delete associated files
-            for field in [job.word_file, job.excel_template, job.result_file]:
+            for field in [job.word_file, job.excel_template, job.result_file, job.company_logo]:
                 if field and field.name:
                     try:
-                        path = field.path
-                        if os.path.exists(path) and not dry_run:
-                            os.remove(path)
-                            self.stdout.write(f"  Fichier supprimé: {path}")
+                        if not dry_run:
+                            name = field.name
+                            field.delete(save=False)
+                            self.stdout.write(f"  Fichier supprimé: {name}")
                     except Exception as e:
                         self.stderr.write(f"  Erreur suppression fichier: {e}")
 

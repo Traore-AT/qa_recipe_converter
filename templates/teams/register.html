@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+
+{% block title %}Inscription — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:440px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1 style="margin-bottom:1rem;">Créer un compte</h1>
+    {% for name, messages in errors.items %}{% for message in messages %}
+    <p class="alert alert-error" role="alert">{{ message }}</p>
+    {% endfor %}{% endfor %}
+    <form method="post">
+        {% csrf_token %}
+        <p style="margin-bottom:1rem;"><label>Nom d'utilisateur<br><input type="text" name="username" required style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>E-mail<br><input type="email" name="email" required style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Prénom<br><input type="text" name="first_name"  style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Nom<br><input type="text" name="last_name"  style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <p style="margin-bottom:1rem;"><label>Mot de passe (8 caractères minimum)<br><input type="password" name="password" required minlength="8" autocomplete="new-password" style="width:100%;min-height:44px;padding:.6rem;border:1px solid var(--slate-300);border-radius:var(--radius);"></label></p>
+        <button class="btn btn-primary" type="submit">Créer mon compte</button>
+    </form>
+</section>
+{% endblock %}

@@ -5,8 +5,6 @@ from django.urls import reverse
 from apps.core.models import ConversionJob, ExtractedUseCase
 import uuid
 
-PY314 = sys.version_info >= (3, 14)
-skip_if_py314 = pytest.mark.skipif(PY314, reason='Django 5.0.6 incompatible avec Python 3.14')
 
 
 @pytest.mark.django_db
@@ -84,7 +82,6 @@ class TestExtractedUseCaseModel:
 
 
 @pytest.mark.django_db
-@skip_if_py314
 class TestIndexView:
     def test_get_returns_200(self, client):
         response = client.get(reverse('core:index'))

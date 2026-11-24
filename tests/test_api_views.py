@@ -170,10 +170,6 @@ class TestJobDetailAPI:
         resp = api_client.get(f'/api/jobs/{uuid.uuid4()}/')
         assert resp.status_code == 404
 
-    @pytest.mark.skipif(
-        sys.version_info >= (3, 14),
-        reason='Django 5.0.x incompatible avec Python 3.14 pour la template 404',
-    )
     def test_get_job_invalid_uuid(self, api_client, db):
         resp = api_client.get('/api/jobs/not-a-uuid/')
         assert resp.status_code == 404

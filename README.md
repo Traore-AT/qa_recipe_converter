@@ -21,7 +21,7 @@ qa_recipe/
 │   │   ├── parser/               # Moteur de parsing & génération
 │   │   ├── api/                  # API REST (DRF)
 │   │   └── teams/                # Gestion équipes & projets
-│   ├── tests/                    # Suite de tests (124 tests)
+│   ├── tests/                    # Suite de tests (629 tests)
 │   ├── Dockerfile
 │   └── docker-compose.yml
 │
@@ -62,6 +62,62 @@ qa_recipe/
 - L'affectation en lot des cas de test propose une case « Sélectionner tous les cas » parmi les cas non assignés.
 
 Les migrations `qamanagement.0003_defect_sprint_defect_ticket_number` et `qamanagement.0004_sprintticket` doivent être appliquées avant d'utiliser les tickets dans un environnement existant (`python manage.py migrate`). L'API de création des comptes est `POST /api/teams/members/create/` et accepte `username`, `password`, `role` et `team_slugs`; elle vérifie que l'utilisateur connecté est propriétaire de toutes les équipes demandées. Les tickets de sprint utilisent des routes dédiées imbriquées sous `/api/teams/{team}/projects/{project}/sprints/{sprint}/tickets/`.
+
+### Rapports, performance, anomalies et régressions
+
+Routes sous `/api/teams/{team}/projects/{project}/` ; `?sprints=id1,id2` restreint le périmètre (absent = projet entier).
+
+| Route | Rôle |
+|---|---|
+| `report/` · `report/pdf/` | Rapport JSON / PDF du projet, d'un ou plusieurs sprints |
+| `sprints/{id}/report/pdf/` | Rapport PDF d'un sprint |
+| `performance/` | Score /100, niveau, composantes, comparaison des sprints |
+| `evolution/` | Courbe d'évolution (pas journalier, hebdomadaire au-delà de 62 jours) |
+| `regressions/` | Cas passés de « Passé » à « Échoué » et anomalies liées |
+| `defects/{id}/comments/` · `defects/{id}/history/` | Suivi d'une anomalie |
+| `assignable-members/` | Membres de l'équipe assignables depuis le Kanban |
+| `sprints/{id}/` (PATCH) | Nom, objectif, dates ou `duration_days`, statut |
+
+`/api/teams/{team}/performance/` compare tous les projets visibles.
+
+- **Score** : 40 % réussite + 25 % avancement + 20 % résolution des anomalies + 15 % stabilité. Excellent ≥ 85, Bon ≥ 70, Moyen ≥ 50, Critique sinon ; « Non évalué » sans exécution. Pondérations dans `apps/qamanagement/analytics.py`.
+- **Historique** : tout changement de statut crée une `UseCaseExecution` (signal), source des courbes et des régressions.
+- **Sprint terminé/clôturé** : ses résultats sont figés ; le rouvrir pour les modifier.
+- **Charte GLOBAL ITEC** (logo, pied de page) : `apps/teams/reports.py`.
+
+Mise à jour d'un environnement existant : `pip install -r requirements.txt` puis `python manage.py migrate` (les migrations reprennent l'historique existant).
+
+### Automatisation et intégrations
+
+| Fonction | API (sous `/api/teams/{team}/projects/{project}/`) | Interface |
+|---|---|---|
+| Réglages (alertes, Jira) | `qa-settings/` | Projet → Réglages |
+| Export Excel | `report/xlsx/`, `defects/export/xlsx/` | Rapports, Anomalies |
+| Envoi du rapport | `sprints/{id}/report/send/` (automatique à la clôture) | Kanban |
+| Report de cas | `sprints/{id}/carry-over/` | Kanban |
+| Campagne de non-régression | `regression-campaign/` | Anomalies → Régressions |
+| Import de résultats | `test-results/import/` (`dry_run` = aperçu) | Kanban |
+| Jira | `jira/sync/`, `defects/{id}/jira/` | Réglages, fiche d'anomalie |
+
+**E-mails** — définir `EMAIL_HOST`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` et `FRONTEND_URL`.
+
+**Jira Cloud** — définir `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, puis lier le projet dans Réglages (super-admin). Pour le temps réel, créer un webhook vers `https://<backend>/api/integrations/jira/webhook/` avec le secret `JIRA_WEBHOOK_SECRET` (événements : ticket créé / modifié / supprimé, commentaire créé). En complément, planifier `python manage.py sync_jira`.
+
+| Jira (catégorie) | Application |
+|---|---|
+| À faire | Ouvert / Réouvert |
+| En cours | En cours |
+| Terminé | Résolu / Fermé |
+
+**Cypress** — `npm run cy:report` dans le projet généré produit `results/*.xml`. Les tests doivent porter le numéro du cas (`CAS-001`) dans leur titre, ce que fait le projet généré.
+
+**Stockage S3** — définir `S3_BUCKET` et les variables `S3_*` (voir `.env.example`), puis :
+
+```bash
+python manage.py media_storage --check
+python manage.py media_storage --migrate --dry-run
+python manage.py media_storage --migrate
+```
 
 ---
 
@@ -158,7 +214,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=apps --cov-report=term-missing
 ```
 
-**Résultats :** 124 tests — 121 ✅ / 3 ⚠️ (compatibilité Python 3.14)
+**Résultats :** 629 tests, 100 % de réussite (Python 3.12 et 3.14). Les tests n'écrivent ni dans `media/`, ni dans la base, et n'ouvrent pas VS Code.
 
 ---
 
@@ -184,11 +240,12 @@ python -m pytest tests/ --cov=apps --cov-report=term-missing
 
 | Composant | Technologie |
 |---|---|---|
-| Backend | Python / Django 5.1 + DRF |
+| Backend | Python / Django 5.2 LTS + DRF |
 | Frontend | React 19 + TypeScript + Tailwind CSS v4 |
 | BDD | SQLite |
 | Parsing Word | python-docx |
 | Génération Excel | openpyxl |
+| Rapports PDF | ReportLab (aucune dépendance système) |
 | Conteneurisation | Docker + docker-compose |
 | Serveur prod backend | gunicorn + whitenoise |
 | Serveur prod frontend | Nginx |

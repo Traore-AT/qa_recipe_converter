@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+
+{% block title %}Résultat — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:640px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1>{{ job.source_filename }}</h1>
+    <p>{{ job.get_status_display }} — {{ job.use_cases_count }} cas, {{ automated_count }} automatisé(s)</p>
+    {% if job.error_message %}<p class="alert alert-error" role="alert">{{ job.error_message }}</p>{% endif %}
+    <p style="margin-top:1rem;"><a class="btn btn-primary" href="{% url 'core:preview' job.id %}">Voir la recette</a></p>
+</section>
+{% endblock %}

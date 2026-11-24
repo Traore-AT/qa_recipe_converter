@@ -73,7 +73,10 @@ class ExtractedUseCase(models.Model):
 
     id               = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     job              = models.ForeignKey(ConversionJob, on_delete=models.CASCADE, related_name='use_cases', null=True, blank=True)
-    project          = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='use_cases')
+    # Nul pour les conversions effectuées hors projet (mode anonyme / outil de conversion).
+    project          = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='use_cases',
+                                         null=True, blank=True)
+    created_at       = models.DateTimeField(auto_now_add=True, null=True, editable=False)
     case_number      = models.PositiveIntegerField(default=0)
     ticket_number    = models.CharField(max_length=32, blank=True, default='')
     order            = models.IntegerField(default=0)
@@ -114,6 +117,9 @@ class ExtractedUseCase(models.Model):
                 self.ticket_number = self.ticket_number or f'CAS-{self.case_number:03d}'
                 super().save(*args, **kwargs)
                 return
+        if not self.project_id and not self.case_number:
+            # Hors projet : la numérotation suit simplement l'ordre dans la recette.
+            self.case_number = max(self.order or 0, 0)
         if self.case_number and not self.ticket_number:
             self.ticket_number = f'CAS-{self.case_number:03d}'
         super().save(*args, **kwargs)

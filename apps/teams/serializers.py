@@ -1,6 +1,10 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import Team, TeamMember, TeamInvitation, Project, ProjectMember
+from .permissions import can_manage_project, can_write_project
+
+# Le rôle propriétaire ne s'obtient que par transfert de propriété.
+GRANTABLE_ROLES = [(value, label) for value, label in TeamMember.Role.choices if value != TeamMember.Role.OWNER]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,19 +125,19 @@ class TeamInvitationSerializer(serializers.ModelSerializer):
 class InviteMemberSerializer(serializers.Serializer):
     email = serializers.EmailField()
     role  = serializers.ChoiceField(
-        choices=TeamMember.Role.choices,
+        choices=GRANTABLE_ROLES,
         default=TeamMember.Role.MEMBER
     )
 
 
 class UpdateMemberRoleSerializer(serializers.Serializer):
-    role = serializers.ChoiceField(choices=TeamMember.Role.choices)
+    role = serializers.ChoiceField(choices=GRANTABLE_ROLES)
 
 
 class OwnerCreateMemberSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     password = serializers.CharField(min_length=8, write_only=True)
-    role = serializers.ChoiceField(choices=[(r, label) for r, label in TeamMember.Role.choices if r != 'owner'])
+    role = serializers.ChoiceField(choices=GRANTABLE_ROLES)
     team_slugs = serializers.ListField(child=serializers.SlugField(), allow_empty=False)
 
     def validate_username(self, value):
@@ -169,6 +173,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     avatar_url   = serializers.SerializerMethodField()
     stats        = serializers.SerializerMethodField()
     my_role      = serializers.SerializerMethodField()
+    can_manage   = serializers.SerializerMethodField()
+    can_write    = serializers.SerializerMethodField()
 
     class Meta:
         model  = Project
@@ -176,7 +182,7 @@ class ProjectSerializer(serializers.ModelSerializer):
                   'team_slug', 'team_name', 'created_by',
                   'avatar_url', 'icon', 'color',
                   'visibility', 'status',
-                  'stats', 'my_role',
+                  'stats', 'my_role', 'can_manage', 'can_write',
                   'created_at', 'updated_at']
         read_only_fields = ['id', 'slug', 'created_by', 'team_slug', 'team_name',
                             'created_at', 'updated_at']
@@ -190,6 +196,14 @@ class ProjectSerializer(serializers.ModelSerializer):
     def get_stats(self, obj):
         return obj.stats
 
+    def get_can_manage(self, obj):
+        request = self.context.get('request')
+        return bool(request) and can_manage_project(request.user, obj)
+
+    def get_can_write(self, obj):
+        request = self.context.get('request')
+        return bool(request) and can_write_project(request.user, obj)
+
     def get_my_role(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
@@ -202,6 +216,7 @@ class ProjectCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Project
         fields = ['name', 'description', 'icon', 'color', 'visibility', 'avatar']
+
 
     def validate_avatar(self, value):
         if value:
@@ -218,6 +233,11 @@ class ProjectCreateSerializer(serializers.ModelSerializer):
         project = Project.objects.create(team=team, created_by=user, **validated_data)
         ProjectMember.objects.create(project=project, user=user, role=ProjectMember.Role.LEAD)
         return project
+
+
+class ProjectUpdateSerializer(ProjectCreateSerializer):
+    class Meta(ProjectCreateSerializer.Meta):
+        fields = [*ProjectCreateSerializer.Meta.fields, 'status']
 
 
 class AddProjectMemberSerializer(serializers.Serializer):

@@ -1,12 +1,11 @@
-import sys
 import pytest
 from django.contrib.auth.models import User
 from django.test import Client
 
 from apps.teams.models import Team, TeamMember, Project, ProjectMember
 
-PY314 = sys.version_info >= (3, 14)
-skip_if_py314 = pytest.mark.skipif(PY314, reason='Django 5.0.6 incompatible avec Python 3.14')
+pytestmark = pytest.mark.django_db
+
 
 
 @pytest.fixture
@@ -30,7 +29,6 @@ def client():
 
 
 class TestWebLoginView:
-    @skip_if_py314
     def test_get_renders_form(self, client):
         resp = client.get('/teams/login/')
         assert resp.status_code == 200
@@ -51,7 +49,6 @@ class TestWebLoginView:
         resp = client.post('/teams/login/', {'username': 'owner@test.com', 'password': 'pass1234'})
         assert resp.status_code == 302
 
-    @skip_if_py314
     def test_post_invalid_credentials(self, client):
         resp = client.post('/teams/login/', {'username': 'nobody', 'password': 'wrong'})
         assert resp.status_code == 200
@@ -72,7 +69,6 @@ class TestIndexPage:
 
 
 class TestWebRegisterView:
-    @skip_if_py314
     def test_get_renders_form(self, client):
         resp = client.get('/teams/register/')
         assert resp.status_code == 200
@@ -83,7 +79,6 @@ class TestWebRegisterView:
         resp = client.get('/teams/register/')
         assert resp.status_code == 302
 
-    @skip_if_py314
     def test_post_creates_user_and_logs_in(self, client):
         resp = client.post('/teams/register/', {
             'username': 'newuser', 'email': 'new@test.com',
@@ -92,7 +87,6 @@ class TestWebRegisterView:
         assert resp.status_code == 302
         assert User.objects.filter(username='newuser').exists()
 
-    @skip_if_py314
     def test_post_duplicate_username_shows_errors(self, client, owner):
         resp = client.post('/teams/register/', {
             'username': 'owner_u', 'email': 'other@test.com', 'password': 'securepass1',
@@ -114,7 +108,6 @@ class TestWebLogoutView:
 
 
 class TestTeamsHomeView:
-    @skip_if_py314
     def test_get_shows_user_teams(self, client, owner, team):
         client.force_login(owner)
         resp = client.get('/teams/')
@@ -140,7 +133,6 @@ class TestTeamsHomeView:
 
 
 class TestTeamDashboardPageView:
-    @skip_if_py314
     def test_get_shows_dashboard(self, client, owner, team):
         client.force_login(owner)
         resp = client.get(f'/teams/{team.slug}/')
@@ -153,13 +145,11 @@ class TestTeamDashboardPageView:
         assert resp.status_code == 302
         assert resp.url == '/teams/'
 
-    @skip_if_py314
     def test_get_redirects_unknown_team(self, client, owner):
         client.force_login(owner)
         resp = client.get('/teams/nonexistent/')
         assert resp.status_code == 404
 
-    @skip_if_py314
     def test_dashboard_context_contains_stats(self, client, owner, team):
         client.force_login(owner)
         resp = client.get(f'/teams/{team.slug}/')
@@ -167,7 +157,6 @@ class TestTeamDashboardPageView:
 
 
 class TestCreateProjectPageView:
-    @skip_if_py314
     def test_get_renders_form(self, client, owner, team):
         client.force_login(owner)
         resp = client.get(f'/teams/{team.slug}/projects/new/')
@@ -186,7 +175,6 @@ class TestCreateProjectPageView:
         assert resp.status_code == 302
         assert Project.objects.filter(slug='sprint-1', team=team).exists()
 
-    @skip_if_py314
     def test_post_empty_name_rerenders_form(self, client, owner, team):
         client.force_login(owner)
         resp = client.post(f'/teams/{team.slug}/projects/new/', {
@@ -203,7 +191,6 @@ class TestCreateProjectPageView:
 
 
 class TestProjectPageView:
-    @skip_if_py314
     def test_get_shows_project(self, client, owner, team):
         client.force_login(owner)
         p = Project.objects.create(team=team, name='My Project', created_by=owner)
@@ -211,7 +198,6 @@ class TestProjectPageView:
         resp = client.get(f'/teams/{team.slug}/projects/{p.slug}/')
         assert resp.status_code == 200
 
-    @skip_if_py314
     def test_get_redirects_non_member(self, client, owner, team):
         client.force_login(owner)
         p = Project.objects.create(team=team, name='Private', created_by=owner, visibility='private')
@@ -221,13 +207,11 @@ class TestProjectPageView:
         resp = client.get(f'/teams/{team.slug}/projects/{p.slug}/')
         assert resp.status_code == 302
 
-    @skip_if_py314
     def test_get_404_unknown_project(self, client, owner, team):
         client.force_login(owner)
         resp = client.get(f'/teams/{team.slug}/projects/nonexistent/')
         assert resp.status_code == 404
 
-    @skip_if_py314
     def test_context_contains_project_data(self, client, owner, team):
         client.force_login(owner)
         p = Project.objects.create(team=team, name='Context Check', created_by=owner)

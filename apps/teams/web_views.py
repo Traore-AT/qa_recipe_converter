@@ -6,9 +6,10 @@ from django.views import View
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib import messages
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from .models import Team, TeamMember, TeamInvitation, Project
-from .permissions import can_view_project, can_manage_project
+from .permissions import can_view_project, can_manage_project, can_write_project
 from .email import send_welcome_email
 
 
@@ -23,14 +24,16 @@ class WebLoginView(View):
         password = request.POST.get('password', '')
         if '@' in username:
             from django.contrib.auth.models import User
-            try:
-                username = User.objects.get(email=username).username
-            except User.DoesNotExist:
-                pass
+            match = User.objects.filter(email__iexact=username).first()
+            username = match.username if match else username
         user = authenticate(request, username=username, password=password)
         if user:
             login(request, user)
-            return redirect(request.GET.get('next', 'teams-home'))
+            target = request.GET.get('next', '')
+            # Uniquement des destinations internes (pas de redirection ouverte).
+            if target and url_has_allowed_host_and_scheme(target, {request.get_host()}, request.is_secure()):
+                return redirect(target)
+            return redirect('teams-home')
         messages.error(request, 'Identifiants invalides.')
         return render(request, 'teams/login.html')
 
@@ -196,7 +199,7 @@ class ProjectPageView(LoginRequiredMixin, View):
         context = {
             'team': team,
             'project': project,
-            'can_write': can_view_project(request.user, project),
+            'can_write': can_write_project(request.user, project),
             'can_manage': can_manage_project(request.user, project),
             'members': project.members.select_related('user').all(),
             'stats': project.stats,

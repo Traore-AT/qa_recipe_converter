@@ -4,6 +4,9 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 
 
+CASE_STATUSES = ['À tester', 'En cours', 'Passé', 'Échoué', 'Bloqué']
+
+
 class Sprint(models.Model):
     class Status(models.TextChoices):
         PLANNED   = 'planned',   'Planifié'
@@ -11,8 +14,14 @@ class Sprint(models.Model):
         COMPLETED = 'completed', 'Terminé'
         CLOSED    = 'closed',    'Clôturé'
 
+    class Kind(models.TextChoices):
+        STANDARD   = 'standard',   'Standard'
+        REGRESSION = 'regression', 'Non-régression'
+
     id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project    = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='sprints')
+    kind       = models.CharField(max_length=12, choices=Kind.choices, default=Kind.STANDARD)
+    report_sent_at = models.DateTimeField(null=True, blank=True)
     name       = models.CharField(max_length=200)
     goal       = models.TextField(blank=True, help_text='Objectif du sprint')
     start_date = models.DateField()
@@ -35,21 +44,28 @@ class Sprint(models.Model):
         return (self.end_date - self.start_date).days
 
     @property
+    def is_frozen(self):
+        """Un sprint terminé/clôturé conserve les résultats obtenus pendant son exécution."""
+        return self.status in (self.Status.COMPLETED, self.Status.CLOSED)
+
+    def case_statuses(self):
+        """Statut de chaque cas du sprint : {use_case_id: statut} (un cas = une seule entrée)."""
+        field = 'status' if self.is_frozen else 'use_case__status'
+        return dict(self.assignments.values_list('use_case_id', field))
+
+    @property
     def stats(self):
-        assignments = UseCaseAssignment.objects.filter(sprint=self)
-        total = assignments.values('use_case_id').distinct().count()
-        passed = assignments.filter(use_case__status='Passé').values('use_case_id').distinct().count()
-        failed = assignments.filter(use_case__status='Échoué').values('use_case_id').distinct().count()
-        blocked = assignments.filter(use_case__status='Bloqué').values('use_case_id').distinct().count()
-        in_progress = assignments.filter(use_case__status='En cours').values('use_case_id').distinct().count()
-        not_run = assignments.filter(use_case__status='À tester').values('use_case_id').distinct().count()
+        statuses = list(self.case_statuses().values())
+        total = len(statuses)
+        passed = statuses.count('Passé')
+        failed = statuses.count('Échoué')
         return {
             'total': total,
             'passed': passed,
             'failed': failed,
-            'blocked': blocked,
-            'in_progress': in_progress,
-            'not_run': not_run,
+            'blocked': statuses.count('Bloqué'),
+            'in_progress': statuses.count('En cours'),
+            'not_run': statuses.count('À tester'),
             'progress_pct': round((passed + failed) / total * 100, 1) if total > 0 else 0,
         }
 
@@ -58,10 +74,12 @@ class UseCaseAssignment(models.Model):
     id           = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     use_case     = models.ForeignKey('core.ExtractedUseCase', on_delete=models.CASCADE, related_name='assignments')
     sprint       = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='assignments')
-    assigned_to  = models.ForeignKey('teams.ProjectMember', on_delete=models.CASCADE, null=True, blank=True, related_name='uc_assignments')
+    assigned_to  = models.ForeignKey('teams.ProjectMember', on_delete=models.SET_NULL, null=True, blank=True, related_name='uc_assignments')
     assigned_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_assignments')
     assigned_at  = models.DateTimeField(auto_now_add=True)
     status       = models.CharField(max_length=20, default='À tester')
+    carried_from = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='carried_assignments',
+                                     help_text='Sprint dont le cas a été reporté')
 
     class Meta:
         ordering = ['assigned_at']
@@ -76,6 +94,38 @@ class UseCaseAssignment(models.Model):
     def __str__(self):
         assignee = self.assigned_to.user.username if self.assigned_to_id else 'Non assigné'
         return f'{assignee} → CAS-{self.use_case.case_number:03d}'
+
+    @property
+    def effective_status(self):
+        """Statut à afficher : résultat figé si le sprint est terminé, sinon statut courant du cas."""
+        if self.sprint_id and self.sprint.is_frozen:
+            return self.status
+        return self.use_case.status
+
+
+class UseCaseExecution(models.Model):
+    """Historique des changements de statut d'un cas (source des courbes et des régressions)."""
+    id            = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    use_case      = models.ForeignKey('core.ExtractedUseCase', on_delete=models.CASCADE, related_name='executions')
+    project       = models.ForeignKey('teams.Project', on_delete=models.CASCADE, related_name='executions')
+    sprint        = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='executions')
+    old_status    = models.CharField(max_length=20, blank=True, default='')
+    new_status    = models.CharField(max_length=20)
+    is_regression = models.BooleanField(default=False, help_text='Cas précédemment Passé, désormais Échoué')
+    executed_by   = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='executions')
+    executed_at   = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['executed_at']
+        indexes = [
+            models.Index(fields=['project', 'executed_at'], name='exec_project_date_idx'),
+            models.Index(fields=['use_case', 'executed_at'], name='exec_case_date_idx'),
+        ]
+        verbose_name = 'Exécution de cas'
+        verbose_name_plural = 'Exécutions de cas'
+
+    def __str__(self):
+        return f'{self.use_case_id} : {self.old_status or "—"} → {self.new_status}'
 
 
 class Defect(models.Model):
@@ -112,6 +162,18 @@ class Defect(models.Model):
     steps_to_reproduce  = models.TextField(blank=True)
     expected_behavior   = models.TextField(blank=True)
     actual_behavior     = models.TextField(blank=True)
+    related_use_cases   = models.ManyToManyField('core.ExtractedUseCase', blank=True, related_name='related_defects',
+                                                 help_text='Autres cas de test impactés')
+    is_regression       = models.BooleanField(default=False)
+    regression_of       = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True,
+                                            related_name='regressions', help_text="Anomalie d'origine réapparue")
+    resolution          = models.TextField(blank=True, help_text='Correction apportée / cause racine')
+    resolved_at         = models.DateTimeField(null=True, blank=True)
+    closed_at           = models.DateTimeField(null=True, blank=True)
+    reopen_count        = models.PositiveIntegerField(default=0)
+    jira_key            = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    jira_synced_at      = models.DateTimeField(null=True, blank=True)
+    jira_sync_error     = models.CharField(max_length=500, blank=True, default='')
     environment         = models.CharField(max_length=200, blank=True, help_text='Navigateur, OS, version…')
     attachment          = models.FileField(upload_to='defects/', blank=True, null=True)
     created_at          = models.DateTimeField(auto_now_add=True)
@@ -130,6 +192,98 @@ class Defect(models.Model):
 
     def __str__(self):
         return f'[{self.get_severity_display()}] {self.title}'
+
+    DONE_STATUSES = ('resolved', 'closed')
+
+    @property
+    def is_open(self):
+        return self.status not in self.DONE_STATUSES
+
+    def apply_status(self, new_status):
+        """Change le statut et maintient dates de résolution/fermeture et compteur de réouverture."""
+        was_done = self.status in self.DONE_STATUSES
+        is_done = new_status in self.DONE_STATUSES
+        now = timezone.now()
+        if was_done and not is_done:
+            self.reopen_count += 1
+            self.resolved_at = self.closed_at = None
+        if is_done:
+            self.resolved_at = self.resolved_at or now
+            self.closed_at = (self.closed_at or now) if new_status == self.Status.CLOSED else None
+        self.status = new_status
+
+
+class DefectComment(models.Model):
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    defect     = models.ForeignKey(Defect, on_delete=models.CASCADE, related_name='comments')
+    author     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='defect_comments', null=True, blank=True)
+    external_author = models.CharField(max_length=180, blank=True, help_text='Auteur hors application (Jira)')
+    jira_comment_id = models.CharField(max_length=40, blank=True, default='')
+    content    = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['defect', 'jira_comment_id'], condition=~models.Q(jira_comment_id=''),
+                                    name='uniq_defect_jira_comment'),
+        ]
+        verbose_name = "Commentaire d'anomalie"
+        verbose_name_plural = "Commentaires d'anomalie"
+
+    def __str__(self):
+        return f'{self.author.username if self.author else self.external_author} — {self.defect.ticket_number}'
+
+
+class DefectHistory(models.Model):
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    defect     = models.ForeignKey(Defect, on_delete=models.CASCADE, related_name='history')
+    actor      = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='defect_changes')
+    field      = models.CharField(max_length=40)
+    old_value  = models.TextField(blank=True)
+    new_value  = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Historique d'anomalie"
+        verbose_name_plural = "Historiques d'anomalie"
+
+    def __str__(self):
+        return f'{self.defect.ticket_number} — {self.field}'
+
+
+class ProjectQASettings(models.Model):
+    """Alertes, envois automatiques et intégration Jira d'un projet."""
+    project = models.OneToOneField('teams.Project', on_delete=models.CASCADE, related_name='qa_settings')
+    alert_on_regression = models.BooleanField(default=True)
+    alert_on_critical_defect = models.BooleanField(default=True)
+    auto_report_on_close = models.BooleanField(default=True)
+    jira_enabled = models.BooleanField(default=False)
+    jira_project_key = models.CharField(max_length=20, blank=True, default='')
+    jira_issue_type = models.CharField(max_length=50, default='Bug')
+    jira_import = models.BooleanField(default=False, help_text='Importer les nouveaux tickets Jira comme anomalies')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # Une clé partagée exposerait les tickets d'un projet à un autre.
+            models.UniqueConstraint(fields=['jira_project_key'], condition=~models.Q(jira_project_key=''),
+                                    name='uniq_jira_project_key'),
+        ]
+        verbose_name = 'Réglages QA'
+        verbose_name_plural = 'Réglages QA'
+
+    def __str__(self):
+        return f'Réglages QA — {self.project}'
+
+    @classmethod
+    def for_project(cls, project):
+        return cls.objects.get_or_create(project=project)[0]
+
+    @property
+    def jira_active(self):
+        return self.jira_enabled and bool(self.jira_project_key)
 
 
 class WeeklyReport(models.Model):
@@ -177,6 +331,7 @@ class ActivityLog(models.Model):
     created_at  = models.DateTimeField(auto_now_add=True)
     is_read     = models.BooleanField(default=False)
     target_users = models.ManyToManyField(User, blank=True, related_name='notifications')
+    read_by     = models.ManyToManyField(User, blank=True, related_name='read_notifications')
 
     class Meta:
         ordering = ['-created_at']

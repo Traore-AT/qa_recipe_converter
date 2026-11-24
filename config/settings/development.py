@@ -4,6 +4,8 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
+FILE_SEARCH_ROOT = os.getenv('FILE_SEARCH_ROOT', str(Path.home()))
+
 # ── Mailpit (email development) ───────────────────────────────────────────────
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST     = os.getenv('EMAIL_HOST', 'localhost')

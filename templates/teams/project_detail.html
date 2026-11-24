@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ project.name }} — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:960px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <p><a href="{% url 'team-page' team.slug %}">← {{ team.name }}</a></p>
+    <h1>{{ project.name }}</h1>
+    <p>{{ project.description }}</p>
+    <p>{{ stats.total }} cas · {{ stats.passed }} passé(s) · {{ stats.failed }} échoué(s) · {{ stats.success_rate }} % de réussite</p>
+    <h2>Membres</h2>
+    <ul>{% for member in members %}<li>{{ member.user.username }} — {{ member.get_role_display }}</li>{% endfor %}</ul>
+    <h2>Recettes</h2>
+    <ul>{% for job in recent_jobs %}<li><a href="{% url 'core:preview' job.id %}">{{ job.source_filename }}</a> ({{ job.use_cases_count }} cas)</li>{% empty %}<li>Aucune recette.</li>{% endfor %}</ul>
+</section>
+{% endblock %}

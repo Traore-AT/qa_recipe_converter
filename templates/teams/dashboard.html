@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ team.name }} — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:960px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1>{{ team.name }}</h1>
+    <p>{{ team.description }}</p>
+    <p>{{ stats.projects_total }} projet(s) · {{ stats.uc_total }} cas · {{ stats.success_rate }} % de réussite · {{ stats.members_count }} membre(s)</p>
+    {% if can_manage %}<a class="btn btn-primary" href="{% url 'project-new' team.slug %}">Nouveau projet</a>{% endif %}
+</section>
+<section class="card" style="max-width:960px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h2>Projets</h2>
+    <ul>
+        {% for project in projects %}
+        <li><a href="{% url 'project-page' team.slug project.slug %}">{{ project.name }}</a> — {{ project.get_status_display }}</li>
+        {% empty %}<li>Aucun projet.</li>{% endfor %}
+    </ul>
+    <h2>Membres</h2>
+    <ul>{% for member in members %}<li>{{ member.user.username }} — {{ member.get_role_display }}</li>{% endfor %}</ul>
+    <h2>Conversions récentes</h2>
+    <ul>{% for job in recent_jobs %}<li>{{ job.source_filename }} ({{ job.use_cases_count }} cas)</li>{% empty %}<li>Aucune conversion.</li>{% endfor %}</ul>
+</section>
+{% endblock %}

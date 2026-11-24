@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ job.source_filename }} — QA Recipe Converter{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width:1100px;margin:0 auto 1.5rem;padding:1.5rem;">
+    <h1>{{ job.source_filename }}</h1>
+    <p>{{ use_cases|length }} cas de test, dont {{ automated_count }} automatisé(s)</p>
+    {% if job.status == 'DONE' %}
+    <p style="margin:1rem 0;">
+        <a class="btn btn-primary" href="{% url 'core:generate' job.id %}">Télécharger l'Excel</a>
+        <a class="btn" href="{% url 'core:gherkin' job.id %}">Scripts Gherkin</a>
+        <a class="btn" href="{% url 'core:gherkin' job.id %}?mode=cypress">Projet Cypress</a>
+    </p>
+    {% endif %}
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;">
+        <thead><tr><th>N°</th><th>Use case</th><th>Description</th><th>Étapes</th><th>Résultats attendus</th><th>Statut</th></tr></thead>
+        <tbody>
+        {% for uc in use_cases %}
+        <tr style="border-top:1px solid var(--slate-200);vertical-align:top;"><td>{{ uc.ticket_number }}</td><td>{{ uc.use_case_text }}</td><td>{{ uc.description|linebreaksbr }}</td><td>{{ uc.steps|linebreaksbr }}</td><td>{{ uc.expected_results|linebreaksbr }}</td><td>{{ uc.status }}</td></tr>
+        {% empty %}<tr><td colspan="6">Aucun cas de test.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% endblock %}
