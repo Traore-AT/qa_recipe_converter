@@ -112,15 +112,8 @@ def defect_stats(defects):
     }
 
 
-def project_performance(project, sprints=None):
-    """Niveau de performance des tests : score pondéré /100 et composantes."""
-    statuses = scope_case_statuses(project, sprints)
-    stats = summarize_statuses(statuses.values())
-    defects = defect_stats(scope_defects(project, sprints))
-    regressed = (scope_executions(project, sprints).filter(is_regression=True, use_case_id__in=statuses)
-                 .values('use_case_id').distinct().count())
-    automated = ExtractedUseCase.objects.filter(id__in=statuses, is_automated=True).count()
-
+def score_performance(stats, defects, regressed, automated):
+    """Score pondéré /100, niveau et composantes — même formule pour un projet et pour un portefeuille."""
     components = {
         'pass_rate': stats['pass_rate'],
         'execution_rate': stats['execution_rate'],
@@ -147,6 +140,44 @@ def project_performance(project, sprints=None):
         'automated': automated,
         'defect_density': round(defects['total'] / stats['executed'], 2) if stats['executed'] else 0.0,
     }
+
+
+def project_performance(project, sprints=None):
+    """Niveau de performance des tests : score pondéré /100 et composantes."""
+    statuses = scope_case_statuses(project, sprints)
+    stats = summarize_statuses(statuses.values())
+    defects = defect_stats(scope_defects(project, sprints))
+    regressed = (scope_executions(project, sprints).filter(is_regression=True, use_case_id__in=statuses)
+                 .values('use_case_id').distinct().count())
+    automated = ExtractedUseCase.objects.filter(id__in=statuses, is_automated=True).count()
+    return score_performance(stats, defects, regressed, automated)
+
+
+DEFECT_COUNTS = ('total', 'open', 'in_progress', 'resolved', 'closed', 'reopened', 'active', 'critical', 'major',
+                 'minor', 'trivial', 'regressions', 'reopen_total')
+
+
+def portfolio_performance(performances):
+    """
+    Niveau de performance global d'un ensemble de projets : effectifs cumulés (cas, anomalies,
+    régressions, automatisation) puis même calcul que pour un projet — un gros projet pèse donc
+    à proportion de ses cas, pas comme une simple moyenne des scores.
+    """
+    stats = summarize_statuses([])
+    for key in ('total', 'passed', 'failed', 'blocked', 'in_progress', 'not_run', 'executed'):
+        stats[key] = sum(p['stats'][key] for p in performances)
+    stats.update(execution_rate=_pct(stats['executed'], stats['total']), success_rate=_pct(stats['passed'], stats['total']),
+                 pass_rate=_pct(stats['passed'], stats['executed']))
+    defects = {key: sum(p['defects'][key] for p in performances) for key in DEFECT_COUNTS}
+    done = defects['resolved'] + defects['closed']
+    defects['resolution_rate'] = _pct(done, defects['total'])
+    durations = [(p['defects']['avg_resolution_days'], p['defects']['resolved'] + p['defects']['closed'])
+                 for p in performances if p['defects']['avg_resolution_days'] is not None]
+    weight = sum(n for _, n in durations)
+    defects['avg_resolution_days'] = round(sum(d * n for d, n in durations) / weight, 1) if weight else None
+    regressed = sum(p['regressed_cases'] for p in performances)
+    automated = sum(p['automated'] for p in performances)
+    return score_performance(stats, defects, regressed, automated)
 
 
 def sprint_summary(project, sprint):

@@ -31,6 +31,10 @@ urlpatterns = [
     # ── Performance, évolution & rapports ────────────────────────────────────
     path('teams/<slug:slug>/performance/',
          views.TeamPerformanceView.as_view(), name='team-performance'),
+    path('teams/<slug:slug>/portfolio/',
+         views.TeamPortfolioView.as_view(), name='team-portfolio'),
+    path('teams/<slug:slug>/portfolio/pdf/',
+         views.TeamPortfolioPDFView.as_view(), name='team-portfolio-pdf'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/performance/',
          views.ProjectPerformanceView.as_view(), name='project-performance'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/evolution/',
