@@ -21,7 +21,9 @@ from .models import (
     Sprint, UseCaseAssignment, UseCaseExecution, Defect, WeeklyReport, ActivityLog,
     UseCaseComment, UseCaseScreenshot, CASE_STATUSES,
 )
-from .services import assignable_members, record_defect_changes, resolve_assignee, snapshot_defect
+from .services import (
+    assignable_members, cases_planned_elsewhere, record_defect_changes, resolve_assignee, snapshot_defect,
+)
 from . import analytics, jira
 from .notifications import alert_if_critical
 from .serializers import (
@@ -36,6 +38,7 @@ from .serializers import (
 from apps.teams.models import Team, Project, ProjectMember, TeamMember
 from apps.teams.permissions import can_view_project, can_manage_project, can_write_project
 from apps.core.models import ConversionJob, ExtractedUseCase
+from apps.core.use_cases import clean_jira_ticket
 from apps.teams.serializers import UserPublicSerializer, ProjectSerializer
 
 logger = logging.getLogger(__name__)
@@ -62,7 +65,8 @@ def _assignments(**filters):
     """Affectations avec tout ce que leur sérialisation consulte (évite les requêtes N+1)."""
     return UseCaseAssignment.objects.filter(**filters).select_related(
         'use_case', 'sprint', 'assigned_to__user', 'assigned_by', 'carried_from',
-    ).prefetch_related('use_case__defects', 'use_case__related_defects', 'use_case__executions')
+    ).prefetch_related('use_case__defects', 'use_case__related_defects', 'use_case__executions',
+                       'use_case__assignments__sprint')
 
 
 def _bad_request(field, message):
@@ -372,17 +376,15 @@ class AssignmentListCreateView(APIView):
 
         use_case_ids = s.validated_data['use_case_ids']
         sprint_id = s.validated_data.get('sprint_id')
-        user_id = s.validated_data['user_id']
-
-        try:
-            target_user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
-            return Response({'error': 'Utilisateur introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+        user_ids = s.validated_data.get('user_ids') or [s.validated_data['user_id']]
 
         # Tout membre de l'équipe peut recevoir des cas : il rejoint alors le projet comme testeur.
-        pm, error = resolve_assignee(project, target_user.id)
-        if error:
-            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+        members = []
+        for user_id in user_ids:
+            pm, error = resolve_assignee(project, user_id)
+            if error:
+                return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
+            members.append(pm)
 
         sprint = None
         if sprint_id:
@@ -391,32 +393,56 @@ class AssignmentListCreateView(APIView):
                 return Response({'error': "Ce sprint est terminé : rouvrez-le pour y assigner des cas."},
                                 status=status.HTTP_400_BAD_REQUEST)
 
-        ucs = ExtractedUseCase.objects.filter(id__in=use_case_ids, project=project)
-        created = []
-        errors = []
-        created_assignments = []
+        ucs = ExtractedUseCase.objects.filter(id__in=use_case_ids, project=project).order_by('case_number')
+        created, errors, created_assignments = [], [], []
+        elsewhere = {}
+        if sprint:
+            # Un cas planifié dans un autre sprint n'est pas réassigné ici (il se reporte explicitement).
+            for case_id, name in (UseCaseAssignment.objects
+                                  .filter(use_case__in=ucs, use_case_id__in=cases_planned_elsewhere(project, sprint))
+                                  .exclude(sprint=sprint).values_list('use_case_id', 'sprint__name')):
+                elsewhere.setdefault(case_id, name)
+        # Charge actuelle de chaque membre dans ce sprint : la répartition équilibre les totaux.
+        load = {pm.pk: UseCaseAssignment.objects.filter(sprint=sprint, assigned_to=pm).count() for pm in members}
+        received = {pm.pk: 0 for pm in members}
+
         for uc in ucs:
+            if uc.id in elsewhere:
+                errors.append(f'CAS-{uc.case_number:03d} est déjà planifié dans le sprint « {elsewhere[uc.id]} » '
+                              '(utilisez « Reporter les cas »)')
+                continue
+            holders = set(UseCaseAssignment.objects.filter(use_case=uc, sprint=sprint, assigned_to__in=members)
+                          .values_list('assigned_to_id', flat=True))
+            candidates = [pm for pm in members if pm.pk not in holders]
+            if not candidates:
+                errors.append(f'CAS-{uc.case_number:03d} déjà assigné à ce membre dans ce sprint')
+                continue
+            pm = min(candidates, key=lambda m: (load[m.pk], members.index(m)))
             waiting = UseCaseAssignment.objects.filter(use_case=uc, sprint=sprint, assigned_to__isnull=True).first()
-            already = UseCaseAssignment.objects.filter(use_case=uc, sprint=sprint, assigned_to=pm).exists()
-            if waiting and not already:
+            if waiting:
                 # Le cas est déjà dans le sprint sans responsable : on le complète au lieu de le dupliquer.
                 waiting.assigned_to, waiting.assigned_by = pm, request.user
                 waiting.save(update_fields=['assigned_to', 'assigned_by'])
-                created.append(str(uc.id))
-                created_assignments.append(waiting)
-                continue
-            assignment, was_created = UseCaseAssignment.objects.get_or_create(
-                use_case=uc, assigned_to=pm, sprint=sprint,
-                defaults={'assigned_by': request.user, 'status': uc.status})
-            if was_created:
-                created.append(str(uc.id))
-                created_assignments.append(assignment)
+                assignment = waiting
             else:
-                errors.append(f'CAS-{uc.case_number:03d} déjà assigné à ce membre dans ce sprint')
+                assignment = UseCaseAssignment.objects.create(
+                    use_case=uc, assigned_to=pm, sprint=sprint, assigned_by=request.user, status=uc.status)
+            load[pm.pk] += 1
+            received[pm.pk] += 1
+            created.append(str(uc.id))
+            created_assignments.append(assignment)
 
-        _log_activity(project, team, request.user, 'assignments_created',
-                      f'{len(created)} cas assigné(s) à {target_user.username}',
-                      target_users=[target_user])
+        if not created and errors:
+            return Response({'error': ' ; '.join(errors), 'created': [], 'count': 0, 'errors': errors},
+                            status=status.HTTP_400_BAD_REQUEST)
+        distribution = [{'user_id': pm.user_id, 'username': pm.user.username,
+                         'full_name': pm.user.get_full_name() or pm.user.username, 'count': received[pm.pk]}
+                        for pm in members]
+        for row in distribution:
+            if row['count']:
+                _log_activity(project, team, request.user, 'assignments_created',
+                              f'{row["count"]} cas assigné(s) à {row["username"]}',
+                              target_users=[pm.user for pm in members if pm.user_id == row['user_id']])
 
         # Send email notification for each assignment
         if sprint and created_assignments:
@@ -427,7 +453,7 @@ class AssignmentListCreateView(APIView):
             except Exception:
                 logger.exception("Failed to send assignment email")
 
-        return Response({'created': created, 'count': len(created), 'errors': errors},
+        return Response({'created': created, 'count': len(created), 'errors': errors, 'distribution': distribution},
                         status=status.HTTP_201_CREATED)
 
 
@@ -554,7 +580,7 @@ class UseCaseJiraUpdateView(APIView):
         _require_write(request.user, project)
         uc = get_object_or_404(ExtractedUseCase, id=uc_id, project=project)
 
-        uc.jira_ticket = (request.data.get('jira_ticket') or '').strip()
+        uc.jira_ticket = clean_jira_ticket(request.data.get('jira_ticket'))
         uc.save()
 
         return Response({
@@ -1147,21 +1173,30 @@ class ProjectActivityView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class UnassignedUseCasesView(APIView):
+    """
+    Cas assignables. Avec `?sprint=` : cas sans responsable dans ce sprint, à l'exclusion des cas
+    déjà planifiés dans un autre sprint (ils se reportent via « Reporter les cas »).
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, slug, project_slug):
         team, project = _get_team_and_project(slug, project_slug, request.user)
-        all_ucs = ExtractedUseCase.objects.filter(project=project)
+        cases = ExtractedUseCase.objects.filter(project=project).order_by('case_number')
         sprint_id = request.query_params.get('sprint')
-        assignments = UseCaseAssignment.objects.filter(use_case__project=project)
+        hidden = 0
         if sprint_id:
-            get_object_or_404(Sprint, id=_uuid_or_400(sprint_id, 'sprint'), project=project)
-            assignments = assignments.filter(sprint_id=sprint_id, assigned_to__isnull=False)
-        assigned_uc_ids = assignments.values_list('use_case_id', flat=True)
-        unassigned = all_ucs.exclude(id__in=assigned_uc_ids)
+            sprint = get_object_or_404(Sprint, id=_uuid_or_400(sprint_id, 'sprint'), project=project)
+            assigned_here = UseCaseAssignment.objects.filter(sprint=sprint, assigned_to__isnull=False)
+            cases = cases.exclude(id__in=assigned_here.values('use_case_id'))
+            elsewhere = cases_planned_elsewhere(project, sprint)
+            hidden = cases.filter(id__in=elsewhere).count()
+            cases = cases.exclude(id__in=elsewhere)
+        else:
+            cases = cases.exclude(id__in=UseCaseAssignment.objects.filter(
+                use_case__project=project).values('use_case_id'))
         from apps.teams.serializers import ExtractedUseCaseSerializerBasic
-        s = ExtractedUseCaseSerializerBasic(unassigned, many=True)
-        return Response({'results': s.data, 'count': len(s.data)})
+        data = ExtractedUseCaseSerializerBasic(cases, many=True).data
+        return Response({'results': data, 'count': len(data), 'hidden_other_sprints': hidden})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ from apps.teams.permissions import can_manage_project, can_view_project, can_wri
 from apps.core.access import check_job_access
 from apps.core.files import local_copy
 from apps.core.models import ConversionJob, ExtractedUseCase
+from apps.core.use_cases import clean_jira_ticket, save_extracted_use_cases
 from apps.core.word_validation import WordFileValidationError, validate_word_upload
 from apps.core.doc_converter import convert_doc_to_docx, is_doc_file, is_libreoffice_available
 from apps.parser.docx_parser import DocxParser
@@ -171,17 +172,7 @@ class UploadAPIView(APIView):
                     status=status.HTTP_422_UNPROCESSABLE_ENTITY
                 )
 
-            for idx, uc_data in enumerate(use_cases):
-                ExtractedUseCase.objects.create(
-                    job=job,
-                    order=idx + 1,
-                    use_case_text=uc_data.get('use_case_text', ''),
-                    description=uc_data.get('description', ''),
-                    preconditions=uc_data.get('preconditions', ''),
-                    steps=uc_data.get('steps', ''),
-                    expected_results=uc_data.get('expected_results', ''),
-                    observed_results=uc_data.get('observed_results', ''),
-                )
+            save_extracted_use_cases(job, use_cases)
 
             job.use_cases_count = len(use_cases)
             job.status = ConversionJob.Status.DONE
@@ -455,6 +446,8 @@ class BatchSaveAPIView(APIView):
             uc.observed_results = uc_data.get('observed_results', uc.observed_results)
             uc.is_automated     = uc_data.get('is_automated', uc.is_automated)
             uc.status           = uc_data.get('status', uc.status)
+            if 'jira_ticket' in uc_data:
+                uc.jira_ticket = clean_jira_ticket(uc_data['jira_ticket'])
             uc.save()
 
 
@@ -561,3 +554,109 @@ class GenerateCSVAPIView(APIView):
         response = HttpResponse(output.getvalue(), content_type='text/csv; charset=utf-8')
         response['Content-Disposition'] = f'attachment; filename="recettes_{filename}.csv"'
         return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aperçu d'import et validation des tickets Jira
+# ─────────────────────────────────────────────────────────────────────────────
+
+FIELD_LABELS = {
+    'use_case_text': 'Use Case', 'description': 'Description', 'preconditions': 'Préconditions',
+    'steps': 'Étapes', 'expected_results': 'Résultats attendus', 'observed_results': 'Résultats observés',
+    'jira_ticket': 'Tickets Jira',
+}
+ANALYSIS_SAMPLE_SIZE = 20
+
+
+def analyse_word_document(path):
+    """Ce que l'import extraira d'un document : colonnes reconnues, lignes, tickets Jira (sans rien enregistrer)."""
+    from apps.core.use_cases import clean_jira_ticket, invalid_jira_keys
+    parser = DocxParser(path)
+    rows = parser.extract_use_cases()
+    tables = [{**t, 'columns': [{**c, 'label': FIELD_LABELS.get(c['field'])} for c in t['columns']]}
+              for t in parser.tables_report]
+    detected = {c['field'] for t in tables for c in t['columns'] if c['field']}
+    invalid = [{'row': i, 'ticket': key} for i, row in enumerate(rows, start=1)
+               for key in invalid_jira_keys(row.get('jira_ticket'))]
+    warnings = []
+    if 'jira_ticket' not in detected:
+        warnings.append("Aucune colonne « Tickets Jira » reconnue : les numéros Jira ne seront pas importés.")
+    if invalid:
+        warnings.append(f'{len(invalid)} référence(s) Jira au format inattendu (attendu : PROJET-123).')
+    if not rows:
+        warnings.append('Aucun cas de test détecté : vérifiez les en-têtes des tableaux.')
+    return {
+        'tables': tables,
+        'total_cases': len(rows),
+        'fields': sorted(detected, key=list(FIELD_LABELS).index),
+        'jira_column': 'jira_ticket' in detected,
+        'with_jira': sum(1 for r in rows if r.get('jira_ticket')),
+        'invalid_jira': invalid,
+        'warnings': warnings,
+        'sample': [{**{f: r.get(f, '') for f in FIELD_LABELS}, 'jira_ticket': clean_jira_ticket(r.get('jira_ticket'))}
+                   for r in rows[:ANALYSIS_SAMPLE_SIZE]],
+    }
+
+
+class UploadAnalyzeAPIView(APIView):
+    """Aperçu avant import : rien n'est enregistré."""
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        word_file = request.FILES.get('word_file')
+        if not word_file:
+            return Response({'error': 'Le fichier Word est requis.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_word_upload(word_file)
+        except WordFileValidationError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        suffix = os.path.splitext(word_file.name)[1].lower()
+        work_dir = tempfile.mkdtemp(prefix='analyze_')
+        try:
+            path = os.path.join(work_dir, f'source{suffix}')
+            with open(path, 'wb') as target:
+                for chunk in word_file.chunks():
+                    target.write(chunk)
+            if is_doc_file(path):
+                converted = convert_doc_to_docx(path) if is_libreoffice_available() else None
+                if converted is None:
+                    return Response({'error': "L'aperçu n'est pas disponible pour ce fichier .doc : "
+                                              'enregistrez-le au format .docx.'},
+                                    status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+                try:
+                    return Response(analyse_word_document(converted))
+                finally:
+                    shutil.rmtree(os.path.dirname(converted), ignore_errors=True)
+            return Response(analyse_word_document(path))
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+class JobJiraValidateAPIView(APIView):
+    """
+    Vérifie les tickets Jira d'une recette (format, puis existence si Jira est configuré).
+    Corps optionnel : {"tickets": [...]} ; par défaut, les tickets de tous les cas de la recette.
+    """
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser]
+
+    def post(self, request, job_id):
+        from apps.qamanagement import jira
+        job = get_object_or_404(ConversionJob, id=job_id)
+        check_job_access(request.user, job)
+        tickets = request.data.get('tickets')
+        if tickets is None:
+            tickets = list(job.use_cases.exclude(jira_ticket='').values_list('jira_ticket', flat=True))
+        if not isinstance(tickets, list) or not all(isinstance(t, str) for t in tickets):
+            return Response({'tickets': ['Liste de références attendue.']}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_authenticated:
+            # Sans compte : contrôle de format uniquement (pas d'interrogation de Jira).
+            from apps.core.use_cases import is_valid_jira_key, split_jira_keys
+            keys = list(dict.fromkeys(k for t in tickets for k in split_jira_keys(t)))
+            return Response({'jira_checked': False, 'error': '', 'results': [
+                {'ticket': k, 'valid_format': is_valid_jira_key(k), 'exists': None, 'summary': ''} for k in keys]})
+        return Response(jira.check_tickets(tickets))

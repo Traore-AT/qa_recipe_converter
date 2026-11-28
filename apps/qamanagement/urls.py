@@ -61,6 +61,8 @@ urlpatterns = [
          automation_views.TestResultsImportView.as_view(), name='test-results-import'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/jira/sync/',
          automation_views.JiraSyncView.as_view(), name='jira-sync'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/jira/validate-tickets/',
+         automation_views.JiraTicketValidateView.as_view(), name='jira-validate-tickets'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/defects/<uuid:defect_id>/jira/',
          automation_views.DefectJiraPushView.as_view(), name='defect-jira-push'),
     path('integrations/jira/webhook/',

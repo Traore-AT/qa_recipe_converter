@@ -79,7 +79,7 @@ class UseCaseAssignmentSerializer(serializers.ModelSerializer):
                   'jira_ticket', 'description', 'preconditions', 'steps', 'expected_results', 'observed_results', 'jira_url',
                   'case_number', 'sprint', 'assigned_to', 'assigned_to_user', 'assigned_by',
                   'assigned_by_user', 'assigned_at', 'status', 'defects', 'open_defects_count', 'is_regression',
-                  'carried_from_name']
+                  'carried_from_name', 'other_sprints']
         read_only_fields = ['id', 'assigned_by', 'assigned_at', 'status']
 
     status             = serializers.CharField(source='effective_status', read_only=True)
@@ -87,6 +87,16 @@ class UseCaseAssignmentSerializer(serializers.ModelSerializer):
     open_defects_count = serializers.SerializerMethodField()
     is_regression      = serializers.SerializerMethodField()
     carried_from_name  = serializers.CharField(source='carried_from.name', read_only=True, default=None)
+    other_sprints      = serializers.SerializerMethodField()
+
+    def get_other_sprints(self, obj):
+        """Autres sprints contenant ce cas, avec son résultat dans chacun (badge « Aussi dans »)."""
+        others = {}
+        for a in obj.use_case.assignments.all():
+            if a.sprint_id and a.sprint_id != obj.sprint_id and a.sprint_id not in others:
+                others[a.sprint_id] = {'id': str(a.sprint_id), 'name': a.sprint.name,
+                                       'status': a.sprint.status, 'case_status': a.status}
+        return sorted(others.values(), key=lambda s: s['name'])
 
     def _defects(self, obj):
         if not hasattr(obj, '_linked_defects'):
@@ -198,6 +208,9 @@ class SprintCaseUpdateSerializer(AssigneeFieldsMixin, serializers.ModelSerialize
         request = self.context.get('request')
         instance._status_actor = getattr(request, 'user', None)
         instance._status_sprint = assignment.sprint if assignment else None
+        if assignment and assignment.sprint_id and validated_data.get('status') == assignment.status:
+            # Statut inchangé dans ce sprint : ne pas écraser le dernier statut global avec celui-ci.
+            validated_data.pop('status')
         case = super().update(instance, validated_data)
         if assigned_to is not serializers.empty and assignment:
             siblings = UseCaseAssignment.objects.filter(use_case=case, sprint=assignment.sprint)
@@ -212,14 +225,28 @@ class SprintCaseUpdateSerializer(AssigneeFieldsMixin, serializers.ModelSerialize
 
 
 class CreateAssignmentSerializer(serializers.Serializer):
+    """Assignation à un membre (`user_id`) ou répartition équilibrée entre plusieurs (`user_ids`)."""
     use_case_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
     sprint_id    = serializers.UUIDField(required=False, allow_null=True)
-    user_id      = serializers.IntegerField()
+    user_id      = serializers.IntegerField(required=False)
+    user_ids     = serializers.ListField(child=serializers.IntegerField(), required=False, allow_empty=False,
+                                         max_length=50)
 
     def validate_user_id(self, value):
         if not User.objects.filter(id=value).exists():
             raise serializers.ValidationError('Utilisateur introuvable.')
         return value
+
+    def validate_user_ids(self, value):
+        value = list(dict.fromkeys(value))
+        if User.objects.filter(id__in=value).count() != len(value):
+            raise serializers.ValidationError('Utilisateur introuvable.')
+        return value
+
+    def validate(self, attrs):
+        if ('user_id' in attrs) == ('user_ids' in attrs):
+            raise serializers.ValidationError({'user_id': 'Indiquez un membre (user_id) ou plusieurs (user_ids).'})
+        return attrs
 
 
 def _case_summary(case):

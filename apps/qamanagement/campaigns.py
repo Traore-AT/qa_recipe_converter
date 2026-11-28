@@ -41,7 +41,7 @@ def carry_over(source, target, user, case_ids=None, include_failed=False, close_
                 continue
             UseCaseAssignment.objects.create(
                 use_case=assignment.use_case, sprint=target, assigned_to=assignment.assigned_to,
-                assigned_by=user, status=assignment.use_case.status, carried_from=source)
+                assigned_by=user, status=assignment.effective_status, carried_from=source)
             created.append(assignment)
         if close_source and not source.is_frozen:
             source.status = Sprint.Status.COMPLETED

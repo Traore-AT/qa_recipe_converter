@@ -424,3 +424,48 @@ def sync_project(project):
             if not Defect.objects.filter(jira_key=issue.get('key')).exists():
                 result['imported'] += import_issue(config, issue) is not None
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Validation des tickets liés aux cas de test
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_CHECKED_KEYS = 100
+
+
+def _lookup_issue(key):
+    """(existe, titre) — existe vaut None si Jira n'a pas pu répondre."""
+    try:
+        issue = api('GET', f'issue/{quote(key)}?fields=summary')
+        return True, (issue.get('fields') or {}).get('summary', '')
+    except JiraError as exc:
+        if getattr(exc.__cause__, 'code', None) == 404:
+            return False, ''
+        raise
+
+
+def check_tickets(values):
+    """
+    Vérifie des références Jira : format PROJET-123 puis, si Jira est configuré, existence du ticket.
+
+    Retourne {'jira_checked': bool, 'error': str, 'results': [{ticket, valid_format, exists, summary}]}.
+    `exists` vaut None lorsque l'existence n'a pas été vérifiée.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from apps.core.use_cases import is_valid_jira_key, split_jira_keys
+
+    keys = list(dict.fromkeys(k for value in values for k in split_jira_keys(value)))[:MAX_CHECKED_KEYS]
+    results = {k: {'ticket': k, 'valid_format': is_valid_jira_key(k), 'exists': None, 'summary': ''} for k in keys}
+    checkable = [k for k in keys if results[k]['valid_format']]
+    error = ''
+    checked = is_configured() and bool(checkable)
+    if checked:
+        try:
+            with ThreadPoolExecutor(max_workers=min(8, len(checkable))) as pool:
+                for key, (exists, summary) in zip(checkable, pool.map(_lookup_issue, checkable)):
+                    results[key].update(exists=exists, summary=summary)
+        except JiraError as exc:
+            checked, error = False, str(exc)
+            for key in checkable:
+                results[key].update(exists=None, summary='')
+    return {'jira_checked': checked, 'error': error, 'results': list(results.values())}

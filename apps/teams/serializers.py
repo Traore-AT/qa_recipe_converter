@@ -267,6 +267,7 @@ class ExtractedUseCaseSerializerBasic(serializers.Serializer):
     description = serializers.CharField()
     status = serializers.CharField()
     is_automated = serializers.BooleanField()
+    jira_ticket = serializers.CharField()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
