@@ -92,7 +92,13 @@ Routes sous `/api/teams/{team}/projects/{project}/` ; `?sprints=id1,id2` restrei
 - **Import Word** : la colonne « Tickets Jira » (variantes : « Ticket Jira », « N° Ticket », « Numéro Jira »…) est importée ; plusieurs tickets dans une cellule deviennent « QA-1, QA-2 ».
 - **Charte GLOBAL ITEC** (logo, pied de page) : `apps/teams/reports.py`.
 
-Mise à jour d'un environnement existant : `pip install -r requirements.txt` puis `python manage.py migrate` (les migrations reprennent l'historique existant).
+Mise à jour d'un environnement existant : `pip install -r requirements.txt` ; les migrations s'appliquent automatiquement au démarrage de Gunicorn.
+
+**Migrations automatiques** — au démarrage, `gunicorn.conf.py` lance une fois `python manage.py safe_migrate` (processus maître, avant les workers) :
+- base déjà à jour (par exemple si Render lance déjà `migrate`) → aucun effet ;
+- verrou PostgreSQL : deux instances ne migrent jamais en même temps ;
+- jamais bloquant : durée bornée (`AUTO_MIGRATE_TIMEOUT`, 180 s par défaut), erreurs journalisées, le serveur démarre dans tous les cas ;
+- désactivation : `AUTO_MIGRATE=0`. Manuellement ou en « Pre-Deploy Command » : `sh scripts/migrate.sh` (ajouter `--strict` pour échouer en cas d'erreur).
 
 ### Automatisation et intégrations
 
