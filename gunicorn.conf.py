@@ -42,3 +42,35 @@ worker_connections = int(os.getenv('GUNICORN_WORKER_CONNECTIONS', 1000))
 print(f'  → Workers: {workers} ({worker_class})')
 print(f'  → Timeout: {timeout}s  |  Max requests: {max_requests}')
 print(f'  → Bind: {bind}')
+
+
+# ── Migrations au démarrage ───────────────────────────────────────────────
+# Render Free n'a ni Shell ni commande de pré-déploiement : les migrations en attente sont appliquées
+# ici, une seule fois (processus maître, avant les workers). Sans effet si elles sont déjà appliquées
+# (par exemple par une commande Render) et jamais bloquant : durée bornée, erreurs journalisées,
+# le serveur démarre dans tous les cas. Désactivation : AUTO_MIGRATE=0.
+def on_starting(server):
+    run_startup_migrations(server.log)
+
+
+def run_startup_migrations(log):
+    import subprocess
+    import sys
+
+    if os.getenv('AUTO_MIGRATE', '1').strip().lower() in ('0', 'false', 'no', 'off'):
+        log.info('Migrations automatiques désactivées (AUTO_MIGRATE=0).')
+        return
+    limit = int(os.getenv('AUTO_MIGRATE_TIMEOUT', 180))
+    command = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'manage.py'),
+               'safe_migrate', '--lock-timeout', str(max(limit - 30, 10))]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=limit)
+        for line in (result.stdout + result.stderr).splitlines():
+            if line.strip():
+                log.info(line)
+        if result.returncode:
+            log.warning(f'safe_migrate s’est terminé avec le code {result.returncode} : le serveur démarre quand même.')
+    except subprocess.TimeoutExpired:
+        log.warning(f'Migrations : délai de {limit}s dépassé — le serveur démarre ; elles seront reprises au prochain démarrage.')
+    except Exception as exc:  # ne jamais empêcher le démarrage
+        log.warning(f'Migrations automatiques ignorées : {exc}')

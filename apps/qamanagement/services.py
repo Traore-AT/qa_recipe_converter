@@ -33,6 +33,40 @@ def cases_planned_elsewhere(project, sprint):
             .exclude(sprint=sprint).exclude(use_case_id__in=in_sprint).values('use_case_id'))
 
 
+def assign_cases(sprint, members, cases, by):
+    """
+    Confie `cases` (triés) aux `members` dans `sprint`, en équilibrant la charge de chacun dans ce sprint.
+
+    Un membre ne reçoit jamais deux fois le même cas ; une affectation « en attente » (sans responsable)
+    du sprint est complétée plutôt que dupliquée.
+    Retourne (affectations créées ou complétées, erreurs, {membre.pk: nombre reçu}).
+    """
+    from .models import UseCaseAssignment
+    load = {pm.pk: UseCaseAssignment.objects.filter(sprint=sprint, assigned_to=pm).count() for pm in members}
+    received = {pm.pk: 0 for pm in members}
+    done, errors = [], []
+    for case in cases:
+        holders = set(UseCaseAssignment.objects.filter(use_case=case, sprint=sprint, assigned_to__in=members)
+                      .values_list('assigned_to_id', flat=True))
+        candidates = [pm for pm in members if pm.pk not in holders]
+        if not candidates:
+            errors.append(f'CAS-{case.case_number:03d} déjà assigné à ce membre dans ce sprint')
+            continue
+        pm = min(candidates, key=lambda m: (load[m.pk], members.index(m)))
+        waiting = UseCaseAssignment.objects.filter(use_case=case, sprint=sprint, assigned_to__isnull=True).first()
+        if waiting:
+            waiting.assigned_to, waiting.assigned_by = pm, by
+            waiting.save(update_fields=['assigned_to', 'assigned_by'])
+            assignment = waiting
+        else:
+            assignment = UseCaseAssignment.objects.create(
+                use_case=case, assigned_to=pm, sprint=sprint, assigned_by=by, status=case.status)
+        load[pm.pk] += 1
+        received[pm.pk] += 1
+        done.append(assignment)
+    return done, errors, received
+
+
 def assignable_members(project):
     """Membres de l'équipe, avec leur éventuelle appartenance au projet."""
     in_project = {m.user_id: m for m in ProjectMember.objects.filter(project=project)}

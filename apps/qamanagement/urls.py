@@ -53,6 +53,8 @@ urlpatterns = [
          automation_views.DefectExcelView.as_view(), name='defect-export-xlsx'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/report/send/',
          automation_views.SprintReportSendView.as_view(), name='sprint-report-send'),
+    path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/import-cases/',
+         automation_views.SprintCaseImportView.as_view(), name='sprint-case-import'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/sprints/<uuid:sprint_id>/carry-over/',
          automation_views.CarryOverView.as_view(), name='sprint-carry-over'),
     path('teams/<slug:slug>/projects/<slug:project_slug>/regression-campaign/',

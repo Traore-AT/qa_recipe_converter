@@ -86,12 +86,19 @@ Routes sous `/api/teams/{team}/projects/{project}/` ; `?sprints=id1,id2` restrei
 - **Cas par sprint** : chaque sprint garde ses cas. L'assignation (`unassigned-ucs/?sprint=`, `assignments/`) exclut et refuse les cas déjà planifiés dans un autre sprint ; un cas ne se partage qu'explicitement (« Reporter les cas », campagne de non-régression). Données antérieures : `python manage.py audit_sprint_cases` (rapport) puis `--fix` (retire les doublons sans résultat ni capture).
 - **Statut par sprint** : chaque affectation porte le résultat du cas dans SON sprint (`UseCaseAssignment.status`) ; `ExtractedUseCase.status` reste le dernier résultat connu. Un cas reporté peut donc être « Échoué » dans un sprint et « Passé » dans un autre. Les cartes du Kanban indiquent les autres sprints du cas (`other_sprints`, badge « Aussi dans »).
 - **Assignation** : recherche (n° CAS, ticket Jira, titre), filtre par statut, et répartition équilibrée entre plusieurs testeurs (`assignments/` avec `user_ids`, réponse `distribution`).
+- **Import de cas dans un sprint (Kanban)** : bouton « 📥 Importer des cas » (fichier → aperçu → responsables). `POST /api/teams/{team}/projects/{project}/sprints/{id}/import-cases/` (`dry_run=true` pour l'aperçu, `user_ids` pour assigner ou répartir). Les cas importés n'appartiennent qu'à ce sprint (recette liée via `ConversionJob.sprint`) ; seul « Reporter les cas » les partage. Un cas déjà présent (même intitulé et mêmes tickets Jira) ou répété dans le document est ignoré ; tout est créé en une transaction.
 - **Aperçu d'import** : `POST /api/upload/analyze/` (rien n'est enregistré) détaille les colonnes reconnues, les lignes ignorées et les tickets Jira ; affiché dès le choix du fichier.
 - **Validation Jira** : format `PROJET-123`, puis existence si Jira est configuré — `POST /api/jobs/{id}/jira/validate/` (recette) et `POST /api/teams/{team}/projects/{project}/jira/validate-tickets/` (Kanban).
 - **Import Word** : la colonne « Tickets Jira » (variantes : « Ticket Jira », « N° Ticket », « Numéro Jira »…) est importée ; plusieurs tickets dans une cellule deviennent « QA-1, QA-2 ».
 - **Charte GLOBAL ITEC** (logo, pied de page) : `apps/teams/reports.py`.
 
-Mise à jour d'un environnement existant : `pip install -r requirements.txt` puis `python manage.py migrate` (les migrations reprennent l'historique existant).
+Mise à jour d'un environnement existant : `pip install -r requirements.txt` ; les migrations s'appliquent automatiquement au démarrage de Gunicorn.
+
+**Migrations automatiques** — au démarrage, `gunicorn.conf.py` lance une fois `python manage.py safe_migrate` (processus maître, avant les workers) :
+- base déjà à jour (par exemple si Render lance déjà `migrate`) → aucun effet ;
+- verrou PostgreSQL : deux instances ne migrent jamais en même temps ;
+- jamais bloquant : durée bornée (`AUTO_MIGRATE_TIMEOUT`, 180 s par défaut), erreurs journalisées, le serveur démarre dans tous les cas ;
+- désactivation : `AUTO_MIGRATE=0`. Manuellement ou en « Pre-Deploy Command » : `sh scripts/migrate.sh` (ajouter `--strict` pour échouer en cas d'erreur).
 
 ### Automatisation et intégrations
 
