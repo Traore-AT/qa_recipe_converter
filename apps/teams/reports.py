@@ -12,9 +12,6 @@ from xml.sax.saxutils import escape
 from django.conf import settings
 from django.utils import timezone
 from django.utils.formats import date_format
-from reportlab.graphics.charts.barcharts import HorizontalBarChart
-from reportlab.graphics.charts.lineplots import LinePlot
-from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -24,6 +21,7 @@ from reportlab.pdfgen import canvas
 from reportlab.platypus import CondPageBreak, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from apps.core.models import ExtractedUseCase
+from . import report_charts as charts
 from .models import Project, Team, TeamMember
 from .permissions import can_view_project
 
@@ -70,7 +68,12 @@ STYLES = {
     'kpi': ParagraphStyle('kpi', parent=_BASE, fontName='Helvetica-Bold', fontSize=16, leading=19, alignment=TA_CENTER),
     'kpi_label': ParagraphStyle('kpi_label', parent=_BASE, fontSize=7.5, leading=9, textColor=MUTED,
                                 alignment=TA_CENTER),
+    'text': ParagraphStyle('text', parent=_BASE, fontSize=9.5, leading=13.5, spaceAfter=5),
+    'bullet': ParagraphStyle('bullet', parent=_BASE, fontSize=9.5, leading=13, leftIndent=14, bulletIndent=2,
+                             spaceAfter=3),
 }
+SATISFACTION_COLORS = {'very_satisfying': GREEN, 'satisfying': SKY, 'partial': AMBER, 'insufficient': RED,
+                       'not_evaluated': SLATE}
 
 _REPLACEMENTS = str.maketrans({'→': '>', '←': '<', '✓': 'OK', '✅': 'OK', '❌': 'X', ' ': ' ', '‑': '-'})
 
@@ -218,83 +221,80 @@ def _fr_date(value, fmt='d/m/Y'):
 # Graphiques
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _legend(drawing, items, x, y):
-    for label, color in items:
-        drawing.add(Rect(x, y, 8, 8, fillColor=color, strokeColor=None))
-        drawing.add(String(x + 12, y + 1, _plain(label), fontName='Helvetica', fontSize=8, fillColor=INK))
-        x += 26 + len(label) * 4.4
-
-
 def _line_chart(points, series, percent):
-    """series : [(clé, libellé, couleur)] — un seul axe par graphique."""
-    height = 5.2 * cm
-    drawing = Drawing(WIDTH, height)
-    if len(points) < 2:
-        points = points * 2
-    plot = LinePlot()
-    plot.x, plot.y, plot.width, plot.height = 30, 24, WIDTH - 45, height - 48
-    plot.data = [[(i, p[key]) for i, p in enumerate(points)] for key, _, _ in series]
-    for i, (_, _, color) in enumerate(series):
-        plot.lines[i].strokeColor = color
-        plot.lines[i].strokeWidth = 1.8
-    top = 100 if percent else max(5, max(p[key] for p in points for key, _, _ in series))
-    step = 25 if percent else max(1, -(-top // 5))
-    plot.yValueAxis.valueMin, plot.yValueAxis.valueStep = 0, step
-    plot.yValueAxis.valueMax = top if percent else step * 5
-    plot.yValueAxis.labelTextFormat = '%d%%' if percent else '%d'
-    plot.yValueAxis.visibleGrid = True
-    plot.yValueAxis.gridStrokeColor = GRID
-    plot.yValueAxis.gridStrokeWidth = 0.4
-    plot.yValueAxis.strokeColor = None
-    plot.xValueAxis.valueMin, plot.xValueAxis.valueMax = 0, len(points) - 1
-    plot.xValueAxis.valueSteps = sorted({round(i * (len(points) - 1) / 5) for i in range(6)})
-    plot.xValueAxis.labelTextFormat = lambda v: _fr_date(points[int(round(v))]['date'], 'd/m/y')
-    plot.xValueAxis.strokeColor = MUTED
-    for axis in (plot.xValueAxis, plot.yValueAxis):
-        axis.labels.fontName, axis.labels.fontSize, axis.labels.fillColor = 'Helvetica', 7, MUTED
-    drawing.add(plot)
-    _legend(drawing, [(label, color) for _, label, color in series], 30, height - 12)
-    return drawing
+    return charts.line_chart(points, series, percent, WIDTH)
 
 
 def _status_bar(stats):
-    """Barre unique empilée : répartition des cas par statut."""
-    drawing = Drawing(WIDTH, 1.3 * cm)
-    total, x = stats['total'] or 1, 0
-    visible = [(key, label) for key, label in STATUS_KEYS if stats[key]]
-    for key, label in visible:
-        width = WIDTH * stats[key] / total
-        drawing.add(Rect(x, 18, max(width - 2, 0.5), 14, fillColor=STATUS_COLORS[label], strokeColor=None))
-        x += width
-    _legend(drawing, [(f'{label} ({stats[key]})', STATUS_COLORS[label]) for key, label in visible], 0, 3)
-    return drawing
+    return charts.status_bar(stats, WIDTH)
 
 
 def _sprint_chart(sprints):
-    """Taux de réussite par sprint (barres horizontales, une seule mesure)."""
-    sprints = [s for s in sprints if s['stats']['total']][-12:]
-    if not sprints:
-        return None
-    height = 26 * len(sprints) + 24
-    drawing = Drawing(WIDTH, height)
-    chart = HorizontalBarChart()
-    chart.x, chart.y, chart.width, chart.height = 120, 18, WIDTH - 165, height - 22
-    chart.data = [[s['stats']['success_rate'] for s in reversed(sprints)]]
-    chart.categoryAxis.categoryNames = [_clip(s['name'], 24) for s in reversed(sprints)]
-    chart.bars[0].fillColor, chart.bars[0].strokeColor = BLUE, None
-    chart.barWidth, chart.groupSpacing = 10, 8
-    chart.barLabelFormat = '%.1f%%'
-    chart.barLabels.fontName = 'Helvetica'
-    chart.barLabels.nudge, chart.barLabels.fontSize, chart.barLabels.fillColor = 16, 7.5, INK
-    chart.valueAxis.valueMin, chart.valueAxis.valueMax, chart.valueAxis.valueStep = 0, 100, 25
-    chart.valueAxis.labelTextFormat = '%d%%'
-    chart.valueAxis.visibleGrid, chart.valueAxis.gridStrokeColor = True, GRID
-    chart.categoryAxis.strokeColor = MUTED
-    chart.valueAxis.strokeColor = None
-    for axis in (chart.categoryAxis, chart.valueAxis):
-        axis.labels.fontName, axis.labels.fontSize, axis.labels.fillColor = 'Helvetica', 7.5, MUTED
-    drawing.add(chart)
-    return drawing
+    return charts.sprint_chart(sprints, WIDTH)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phrases clés (introduction, points clés, plan d'action, conclusion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _texts(lines):
+    return [_p(line, 'text') for line in lines]
+
+
+def _bullets(lines, numbered=False):
+    return [Paragraph(escape(_plain(line)), STYLES['bullet'], bulletText=f'{i}.' if numbered else '•')
+            for i, line in enumerate(lines, start=1)]
+
+
+def _introduction(narrative):
+    return [_p('Introduction', 'h2'), *_texts(narrative['introduction'])]
+
+
+def _key_points(narrative):
+    return [KeepTogether([_p('Points clés', 'h2'), *_bullets(narrative['key_points'])])]
+
+
+def _action_plan(narrative):
+    items, owners = narrative['attention_cases'], narrative['responsibilities']
+    if not items and not owners:
+        return []
+    story = []
+    if items:
+        story += [
+            _p(f"Cas en échec et plan d'action ({len(items)})", 'h2'),
+            _p('Constats repris des résultats observés et des commentaires saisis sur les cas en échec ou bloqués.',
+               'muted'),
+            Spacer(1, 4),
+            _table(['Cas', 'Intitulé', 'Statut', 'Résultat observé / commentaire', 'Responsable(s)', 'Action'],
+                   [[f'CAS-{i["case_number"]:03d}' + ('\n' + i['jira_ticket'] if i['jira_ticket'] else ''),
+                     _p(i['title'], 'cell', limit=110), _status(i['status']),
+                     _p(i['observed'] or (f'{i["comment"]} ({i["comment_author"]})' if i['comment'] else 'Non renseigné'),
+                        'cell', limit=220),
+                     _p(', '.join(i['testers']) or 'À attribuer', 'cell'),
+                     _p(i['action'] + (f' — {", ".join(d["ticket_number"] for d in i["defects"])}' if i['defects'] else ''),
+                        'cell')] for i in items],
+                   [2, 4, 1.7, 5, 2.4, 2.3]),
+        ]
+    if owners:
+        story += [
+            _p('Répartition des actions', 'h3'),
+            _table(['Responsable', 'Actions attendues'],
+                   [[_p(o['owner'], 'cell', bold=True), _p(o['actions'], 'cell')] for o in owners], [4.2, 13.2]),
+        ]
+    return story
+
+
+def _conclusion(narrative):
+    level = narrative['satisfaction']
+    color = SATISFACTION_COLORS[level['code']]
+    return [
+        _p('Conclusion et recommandations', 'h2'),
+        *_texts(narrative['conclusion']),
+        Spacer(1, 4),
+        _kpis([('Niveau de satisfaction', level['label'], color)]),
+        Spacer(1, 6),
+        KeepTogether([_p('Recommandations', 'h3'), *_bullets(narrative['recommendations'], numbered=True)]),
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -347,7 +347,9 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
             meta.append(('Objectif', sprints[0].goal))
     meta += [('Généré par', generated_by), ('Date', _fr_date(timezone.now(), 'd/m/Y à H:i'))]
 
+    narrative = data['narrative']
     story = _heading(titles[scope['type']], f'{project.name} — {scope["label"]}', meta)
+    story += _introduction(narrative)
     story += [
         _p('Synthèse', 'h2'),
         _kpis([('Cas de test', stats['total'], INK), ('Passés', stats['passed'], GREEN),
@@ -356,7 +358,9 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
         Spacer(1, 8),
     ]
     if stats['total']:
-        story.append(_status_bar(stats))
+        story += [_p('Répartition des cas par statut', 'h3'), _status_bar(stats)]
+    story += _key_points(narrative)
+    story += _action_plan(narrative)
     story.append(KeepTogether(_performance_section(perf)))
 
     evolution = data['evolution']
@@ -366,13 +370,14 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
             _p("Courbe d'évolution", 'h2'),
             _p(f'Du {_fr_date(evolution["start"])} au {_fr_date(evolution["end"])} — évolution du taux de réussite : '
                f'{sign}{evolution["trend"]:g} point(s)', 'muted'),
-            _line_chart(evolution['points'], [('success_rate', 'Taux de réussite', GREEN),
-                                              ('execution_rate', 'Avancement', BLUE)], percent=True),
+            _line_chart(evolution['points'], [('success_rate', 'Taux de réussite', charts.SERIES[0]),
+                                              ('execution_rate', 'Avancement', charts.SERIES[1])], percent=True),
         ]),
         KeepTogether([
             _p('Anomalies dans le temps', 'h3'),
-            _line_chart(evolution['points'], [('defects_open', 'Anomalies actives', RED),
-                                              ('defects_resolved', 'Anomalies résolues (cumul)', SKY)], percent=False),
+            _line_chart(evolution['points'], [('defects_open', 'Anomalies actives', charts.SERIES[0]),
+                                              ('defects_resolved', 'Anomalies résolues (cumul)', charts.SERIES[1])],
+                        percent=False),
         ]),
     ]
 
@@ -387,7 +392,7 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
     if len(data['sprints']) > 1:
         chart = _sprint_chart(data['sprints'])
         if chart:
-            story += [KeepTogether([_p('Taux de réussite par sprint', 'h3'), chart])]
+            story += [KeepTogether([_p('Réussite et avancement par sprint', 'h3'), chart])]
 
     story.append(_p(f'Anomalies ({defects["total"]})', 'h2'))
     story.append(_kpis([('Ouvertes', defects['open'] + defects['reopened'], RED), ('En cours', defects['in_progress'], AMBER),
@@ -424,6 +429,7 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
           'Oui' if c['is_automated'] else 'Non', c['jira_ticket'], ', '.join(c['defects'])] for c in data['cases']],
         [1.8, 7, 1.9, 1.2, 2, 2.8], empty='Aucun cas de test'))
 
+    story += _conclusion(narrative)
     return _render(f'{titles[scope["type"]]} — {project.name}', story)
 
 
@@ -437,13 +443,19 @@ MAX_CASES_PER_PROJECT = 50
 def _team_story(team, user, detailed):
     projects = [p for p in Project.objects.filter(team=team)
                 if user is None or can_view_project(user, p)]
+    from apps.qamanagement.analytics import project_performance
+    from apps.qamanagement.narrative import portfolio_narrative
     all_stats = [(p, p.stats) for p in projects]
+    performances = {p.pk: project_performance(p) for p in projects}
+    narrative = portfolio_narrative(team, [{'project': p, 'stats': performances[p.pk]['stats'],
+                                            'performance': performances[p.pk]} for p in projects],
+                                    kind='weekly' if detailed else 'daily')
     total = sum(s['total'] for _, s in all_stats)
     passed = sum(s['passed'] for _, s in all_stats)
     failed = sum(s['failed'] for _, s in all_stats)
     rate = round(passed / total * 100, 1) if total else 0
 
-    story = [
+    story = _introduction(narrative) + [
         _p("Vue d'ensemble", 'h2'),
         _kpis([('Projets', len(projects), INK), ('Projets actifs', sum(p.status == 'active' for p in projects), BLUE),
                ('Cas de test', total, INK), ('Passés', passed, GREEN), ('Échoués', failed, RED),
@@ -454,6 +466,15 @@ def _team_story(team, user, detailed):
                  s['in_progress'], s['not_run'], s['automated'], f'{s["success_rate"]:g} %'] for p, s in all_stats],
                [4, 1.6, 1.1, 1.5, 1.6, 1.6, 1.6, 1.6, 1.2, 1.8], empty='Aucun projet'),
     ]
+    story += _key_points(narrative)
+    if narrative['projects']:
+        story += [
+            _p('Appréciation par projet', 'h2'),
+            _table(['Projet', 'Réussite', 'Avancement', 'Score', 'Appréciation'],
+                   [[row['name'], f'{row["success_rate"]:g} %', f'{row["execution_rate"]:g} %',
+                     '—' if row['score'] is None else f'{row["score"]:g}/100', _p(row['assessment'], 'cell', bold=True)]
+                    for row in narrative['projects']], [5, 2, 2.2, 2, 4.4]),
+        ]
     for project, stats in all_stats:
         if not stats['total'] or (not detailed and project.status != 'active'):
             continue
@@ -476,7 +497,7 @@ def _team_story(team, user, detailed):
                [[m.user.get_full_name() or m.user.username, m.user.email, m.get_role_display(),
                  _fr_date(m.joined_at)] for m in members], [4, 5, 2.5, 2]),
     ]
-    return story
+    return story + _conclusion(narrative)
 
 
 def generate_daily_scrum(team: Team, generated_by: str, user=None) -> bytes:

@@ -6,7 +6,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.drawing.line import LineProperties
 from openpyxl.drawing.image import Image
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
@@ -122,6 +124,37 @@ def _yes(value):
     return 'Oui' if value else 'Non'
 
 
+# Palette des graphiques (identique à l'application et aux PDF).
+SERIES_HEX = ('257DE0', 'F47230', '00B894')
+GRID_HEX = 'E7E7E7'
+
+
+def _style_axes(chart):
+    """Grille en trait fin continu, axes discrets."""
+    chart.y_axis.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill=GRID_HEX, w=6350))
+    for axis in (chart.x_axis, chart.y_axis):
+        axis.spPr = GraphicalProperties(ln=LineProperties(solidFill='C2C2C2', w=6350))
+    chart.legend.position = 't'
+
+
+def _sprint_bar_chart(ws, count):
+    """Réussite (%) par sprint, colonnes, à droite du tableau."""
+    head, last = HEADER_ROWS + 1, HEADER_ROWS + 1 + count
+    chart = BarChart()
+    chart.type, chart.grouping = 'col', 'clustered'
+    chart.title, chart.height, chart.width = 'Taux de réussite par sprint (%)', 9, 20
+    chart.y_axis.scaling.min, chart.y_axis.scaling.max, chart.y_axis.majorUnit = 0, 100, 25
+    chart.x_axis.delete, chart.y_axis.delete = False, False
+    chart.add_data(Reference(ws, min_col=9, min_row=head, max_row=last), titles_from_data=True)
+    chart.set_categories(Reference(ws, min_col=1, min_row=head + 1, max_row=last))
+    chart.gapWidth = 120
+    chart.series[0].graphicalProperties.solidFill = SERIES_HEX[0]
+    chart.series[0].graphicalProperties.line.noFill = True
+    _style_axes(chart)
+    chart.legend = None  # une seule série : le titre la nomme
+    ws.add_chart(chart, f'N{head}')
+
+
 def generate_project_workbook(project, sprints, generated_by) -> bytes:
     from apps.qamanagement.analytics import build_report
     data = build_report(project, sprints)
@@ -142,6 +175,7 @@ def generate_project_workbook(project, sprints, generated_by) -> bytes:
         ('Délai moyen de résolution (jours)', defects['avg_resolution_days']),
     ]
     _sheet(wb, 'Synthèse', 'Synthèse', subtitle, ['Indicateur', 'Valeur'], summary, [48, 44])
+    _narrative_sheet(wb, subtitle, data['narrative'])
 
     points = data['evolution']['points']
     ws = _sheet(wb, 'Évolution', "Courbe d'évolution", subtitle,
@@ -156,16 +190,20 @@ def generate_project_workbook(project, sprints, generated_by) -> bytes:
     chart.x_axis.number_format, chart.x_axis.delete, chart.y_axis.delete = 'DD/MM', False, False
     chart.add_data(Reference(ws, min_col=5, max_col=6, min_row=head, max_row=last), titles_from_data=True)
     chart.set_categories(Reference(ws, min_col=1, min_row=head + 1, max_row=last))
-    for series, color in zip(chart.series, ('059669', '2563EB')):
+    for series, color in zip(chart.series, SERIES_HEX):
         series.graphicalProperties.line.solidFill, series.smooth = color, False
+        series.graphicalProperties.line.width = 22000  # ≈ 2 px
+    _style_axes(chart)
     ws.add_chart(chart, f'K{head}')
 
-    _sheet(wb, 'Sprints', 'Résultats par sprint', subtitle,
+    sprints_ws = _sheet(wb, 'Sprints', 'Résultats par sprint', subtitle,
            ['Sprint', 'Début', 'Fin', 'Durée (j)', 'Statut', 'Cas', 'Passés', 'Échoués', 'Réussite (%)', 'Anomalies', 'Régressions', 'Score'],
            [[s['name'], _date(s['start_date']), _date(s['end_date']), s['duration_days'], s['status_label'], s['stats']['total'],
              s['stats']['passed'], s['stats']['failed'], s['stats']['success_rate'], s['defects']['total'],
              s['regressed_cases'], s['score']] for s in data['sprints']],
            [32, 12, 12, 11, 12, 8, 9, 10, 13, 12, 13, 9])
+    if len(data['sprints']) > 1:
+        _sprint_bar_chart(sprints_ws, len(data['sprints']))
     _defects_sheet(wb, subtitle, data['defects'])
     _sheet(wb, 'Régressions', 'Régressions', subtitle,
            ['Cas', 'Intitulé', 'Sprint', 'Détectée le', 'Occurrences', 'Statut actuel', 'Anomalies liées'],
@@ -180,6 +218,29 @@ def generate_project_workbook(project, sprints, generated_by) -> bytes:
            [[f'CAS-{c["case_number"]:03d}', c['title'], c['status'], _yes(c['is_automated']), c['jira_ticket'], ', '.join(c['defects'])]
             for c in data['cases']], [11, 70, 13, 13, 14, 32], status_column=3)
     return _save(wb)
+
+
+def narrative_rows(narrative):
+    """Phrases clés du rapport sous forme de lignes (rubrique, contenu) pour Excel."""
+    rows = [('Introduction', line) for line in narrative['introduction']]
+    rows += [('Point clé', line) for line in narrative['key_points']]
+    for item in narrative.get('attention_cases', []):
+        observed = item['observed'] or (f'{item["comment"]} ({item["comment_author"]})' if item['comment'] else 'Non renseigné')
+        rows.append((f'Cas {item["status"].lower()}',
+                     f'CAS-{item["case_number"]:03d} {item["jira_ticket"]} — {item["title"]} | Constat : {observed} | '
+                     f'Responsable : {", ".join(item["testers"]) or "à attribuer"} | Action : {item["action"]}'))
+    rows += [(f'Action — {r["owner"]}', r['actions']) for r in narrative.get('responsibilities', [])]
+    rows += [(f'Recommandation {i}', line) for i, line in enumerate(narrative['recommendations'], start=1)]
+    rows.append(('Niveau de satisfaction', narrative['satisfaction']['label']))
+    rows += [('Conclusion', line) for line in narrative['conclusion']]
+    return rows
+
+
+def _narrative_sheet(wb, subtitle, narrative):
+    ws = _sheet(wb, 'Rapport', 'Rapport — phrases clés', subtitle, ['Rubrique', 'Contenu'],
+                narrative_rows(narrative), [30, 120])
+    wb.move_sheet(ws, offset=-(len(wb.sheetnames) - 2))  # juste après la feuille par défaut, supprimée ensuite
+    return ws
 
 
 def _defects_sheet(wb, subtitle, rows):

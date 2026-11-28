@@ -384,7 +384,7 @@ class TestExcelExports:
         ExtractedUseCase.objects.filter(pk=env.cases[1].pk).update(use_case_text='=HYPERLINK("http://x")\x07')
         Defect.objects.create(project=env.project, title='@SUM(1)', use_case=env.cases[0], sprint=env.s1)
         wb = self.load(api(env.viewer).get(f'{env.base}/report/xlsx/'))
-        assert wb.sheetnames == ['Synthèse', 'Évolution', 'Sprints', 'Anomalies', 'Régressions', 'Membres', 'Cas de test']
+        assert wb.sheetnames == ['Rapport', 'Synthèse', 'Évolution', 'Sprints', 'Anomalies', 'Régressions', 'Membres', 'Cas de test']
         for ws in wb:
             assert len(ws._images) == 1
             texts = [c.value for row in ws.iter_rows() for c in row if c.value]
