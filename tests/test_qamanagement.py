@@ -517,8 +517,9 @@ class TestAssignmentAPI:
             'sprint_id': str(sprint.id),
             'user_id': tester_user.id,
         }, format='json')
-        assert resp.status_code == status.HTTP_201_CREATED
-        assert len(resp.data['errors']) >= 1
+        # Rien n'a été créé : l'erreur est remontée au lieu d'un succès silencieux.
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert len(resp.data['errors']) >= 1 and 'déjà assigné' in resp.data['error']
 
     def test_create_assignment_non_member(self, client, team, project, done_job, outsider, lead_user):
         client.force_authenticate(lead_user)

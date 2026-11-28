@@ -19,6 +19,7 @@ from django.utils       import timezone
 from .access  import check_job_access
 from .files   import local_copy
 from .models  import ConversionJob, ExtractedUseCase
+from .use_cases import clean_jira_ticket, save_extracted_use_cases
 from .forms   import UploadForm
 from apps.parser.docx_parser       import DocxParser
 from apps.parser.excel_generator   import ExcelGenerator
@@ -104,17 +105,7 @@ class IndexView(View):
                 messages.error(request, job.error_message)
                 return redirect('core:index')
 
-            for idx, uc_data in enumerate(use_cases):
-                ExtractedUseCase.objects.create(
-                    job              = job,
-                    order            = idx + 1,
-                    use_case_text    = uc_data.get('use_case_text', ''),
-                    description      = uc_data.get('description', ''),
-                    preconditions    = uc_data.get('preconditions', ''),
-                    steps            = uc_data.get('steps', ''),
-                    expected_results = uc_data.get('expected_results', ''),
-                    observed_results = uc_data.get('observed_results', ''),
-                )
+            save_extracted_use_cases(job, use_cases)
 
             job.use_cases_count = len(use_cases)
             job.status          = ConversionJob.Status.DONE
@@ -173,7 +164,7 @@ class PreviewView(View):
                 uc.observed_results = uc_data.get('observed_results', uc.observed_results)
                 uc.is_automated     = uc_data.get('is_automated',     uc.is_automated)
                 uc.status           = uc_data.get('status',           uc.status)
-                uc.jira_ticket      = uc_data.get('jira_ticket',      uc.jira_ticket)
+                uc.jira_ticket      = clean_jira_ticket(uc_data.get('jira_ticket', uc.jira_ticket))
                 uc.save()
 
             automated_count = job.use_cases.filter(is_automated=True).count()

@@ -344,7 +344,7 @@ class TestResultsImport:
     @pytest.mark.parametrize('content', [
         b'', b'{', b'[]x', b'<html/>', b'<a', b'{"foo": 1}', b'[1]', b'{"tests": [1]}', b'{"runs": [{"tests": [{"title": [1]}]}]}',
         b'<!DOCTYPE x [<!ENTITY a "b">]><testsuite/>', b'\xff\xfe\x00', b'[' * 100000, b'{"results": [{"suites": [1]}]}',
-    ])
+    ], ids=lambda c: f'{len(c)}B-{c[:24]!r}')  # ids courts : Windows limite PYTEST_CURRENT_TEST à 32 767 caractères
     def test_invalid_files_are_rejected(self, env, content):  # noqa: F811
         resp = self.post(env, content)
         assert resp.status_code == 400 and resp.data['error']

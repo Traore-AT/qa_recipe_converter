@@ -83,6 +83,12 @@ Routes sous `/api/teams/{team}/projects/{project}/` ; `?sprints=id1,id2` restrei
 - **Score** : 40 % réussite + 25 % avancement + 20 % résolution des anomalies + 15 % stabilité. Excellent ≥ 85, Bon ≥ 70, Moyen ≥ 50, Critique sinon ; « Non évalué » sans exécution. Pondérations dans `apps/qamanagement/analytics.py`.
 - **Historique** : tout changement de statut crée une `UseCaseExecution` (signal), source des courbes et des régressions.
 - **Sprint terminé/clôturé** : ses résultats sont figés ; le rouvrir pour les modifier.
+- **Cas par sprint** : chaque sprint garde ses cas. L'assignation (`unassigned-ucs/?sprint=`, `assignments/`) exclut et refuse les cas déjà planifiés dans un autre sprint ; un cas ne se partage qu'explicitement (« Reporter les cas », campagne de non-régression). Données antérieures : `python manage.py audit_sprint_cases` (rapport) puis `--fix` (retire les doublons sans résultat ni capture).
+- **Statut par sprint** : chaque affectation porte le résultat du cas dans SON sprint (`UseCaseAssignment.status`) ; `ExtractedUseCase.status` reste le dernier résultat connu. Un cas reporté peut donc être « Échoué » dans un sprint et « Passé » dans un autre. Les cartes du Kanban indiquent les autres sprints du cas (`other_sprints`, badge « Aussi dans »).
+- **Assignation** : recherche (n° CAS, ticket Jira, titre), filtre par statut, et répartition équilibrée entre plusieurs testeurs (`assignments/` avec `user_ids`, réponse `distribution`).
+- **Aperçu d'import** : `POST /api/upload/analyze/` (rien n'est enregistré) détaille les colonnes reconnues, les lignes ignorées et les tickets Jira ; affiché dès le choix du fichier.
+- **Validation Jira** : format `PROJET-123`, puis existence si Jira est configuré — `POST /api/jobs/{id}/jira/validate/` (recette) et `POST /api/teams/{team}/projects/{project}/jira/validate-tickets/` (Kanban).
+- **Import Word** : la colonne « Tickets Jira » (variantes : « Ticket Jira », « N° Ticket », « Numéro Jira »…) est importée ; plusieurs tickets dans une cellule deviennent « QA-1, QA-2 ».
 - **Charte GLOBAL ITEC** (logo, pied de page) : `apps/teams/reports.py`.
 
 Mise à jour d'un environnement existant : `pip install -r requirements.txt` puis `python manage.py migrate` (les migrations reprennent l'historique existant).

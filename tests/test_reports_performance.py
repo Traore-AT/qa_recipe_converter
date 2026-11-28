@@ -210,7 +210,7 @@ class TestKanbanAssignment:
         assert 'nouveau' in names
 
     def test_assigning_team_member_adds_him_to_project(self, env):
-        case = env.cases[3]
+        case = ExtractedUseCase.objects.create(project=env.project, use_case_text='Hors sprint')
         resp = api(env.owner).post(f'{env.base}/assignments/', {
             'use_case_ids': [str(case.id)], 'sprint_id': str(env.s1.id), 'user_id': env.member.id}, format='json')
         assert resp.status_code == 201 and resp.data['count'] == 1

@@ -2,6 +2,10 @@
 Traçabilité des exécutions : tout changement de statut d'un cas de test — quel que
 soit l'écran d'origine (Kanban, recette, API) — est historisé et synchronisé.
 
+Statut par sprint : `ExtractedUseCase.status` est le dernier résultat connu du cas ;
+chaque affectation garde le résultat du cas dans SON sprint. Un changement ne met à jour
+que le sprint d'exécution (et les affectations hors sprint), jamais les autres sprints.
+
 Les appelants peuvent préciser le contexte via deux attributs transitoires :
     use_case._status_actor   → utilisateur à l'origine du changement
     use_case._status_sprint  → sprint dans lequel le cas a été exécuté
@@ -52,12 +56,21 @@ def track_status_change(sender, instance, created, raw=False, update_fields=None
         return
     if update_fields is not None and 'status' not in update_fields:
         return
-    old = '' if created else (instance._previous_status or '')
     new = instance.status
+    old = '' if created else (instance._previous_status or '')
+    sprint = getattr(instance, '_status_sprint', None)
+    if sprint is not None and not created:
+        # Exécution dans un sprint précis (Kanban, import de résultats) : le statut de départ est celui
+        # du cas dans ce sprint, qui peut différer de son dernier statut global.
+        in_sprint = (UseCaseAssignment.objects.filter(use_case=instance, sprint=sprint)
+                     .values_list('status', flat=True).first())
+        old = in_sprint if in_sprint is not None else old
+    elif not created and old != new:
+        # Sans contexte (recette, API) : le sprint ouvert le plus pertinent contenant le cas.
+        sprint = _default_sprint(instance)
     if old == new or (created and new == ExtractedUseCase.UCStatus.TO_TEST):
         return
 
-    sprint = getattr(instance, '_status_sprint', None) or _default_sprint(instance)
     # Horodatage strictement croissant : deux changements rapprochés restent ordonnés.
     executed_at = timezone.now()
     last = instance.executions.order_by('-executed_at').values_list('executed_at', flat=True).first()
@@ -69,27 +82,23 @@ def track_status_change(sender, instance, created, raw=False, update_fields=None
         is_regression=is_regression(instance, old, new),
         executed_by=getattr(instance, '_status_actor', None),
     )
-    # Les sprints terminés/clôturés gardent leurs résultats : seuls les sprints ouverts suivent.
-    UseCaseAssignment.objects.filter(use_case=instance).filter(
-        Q(sprint__isnull=True) | Q(sprint__status__in=OPEN_SPRINTS)
-    ).update(status=new)
+    # Seul le sprint d'exécution suit (s'il est ouvert) : les autres sprints gardent leurs propres résultats.
+    scope = Q(sprint__isnull=True)
+    if sprint is not None and sprint.status in OPEN_SPRINTS:
+        scope |= Q(sprint=sprint)
+    UseCaseAssignment.objects.filter(use_case=instance).filter(scope).update(status=new)
     if execution.is_regression:
         queue_regression(execution)
 
 
 @receiver(pre_save, sender=Sprint)
 def freeze_results_on_completion(sender, instance, raw=False, **kwargs):
-    """À la clôture, fige le statut courant de chaque cas dans ses affectations."""
+    """Repère la clôture d'un sprint (ses affectations portent déjà leurs résultats, désormais figés)."""
     instance._just_completed = False
     if raw or instance._state.adding or not instance.is_frozen:
         return
     previous = Sprint.objects.filter(pk=instance.pk).first()
-    if previous and not previous.is_frozen:
-        instance._just_completed = True
-        for assignment in previous.assignments.select_related('use_case'):
-            if assignment.status != assignment.use_case.status:
-                assignment.status = assignment.use_case.status
-                assignment.save(update_fields=['status'])
+    instance._just_completed = bool(previous and not previous.is_frozen)
 
 
 @receiver(post_save, sender=Sprint)

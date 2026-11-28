@@ -323,6 +323,17 @@ class JiraSyncView(ProjectAPIView):
         return Response(result)
 
 
+class JiraTicketValidateView(ProjectAPIView):
+    """Vérifie des références Jira (format PROJET-123, puis existence si Jira est configuré)."""
+
+    def post(self, request, **kwargs):
+        self.project()
+        tickets = request.data.get('tickets')
+        if not isinstance(tickets, list) or not all(isinstance(t, str) for t in tickets):
+            return _error('Liste de références attendue (« tickets »).')
+        return Response(jira.check_tickets(tickets))
+
+
 class DefectJiraPushView(ProjectAPIView):
     """Envoie une anomalie vers Jira (création ou nouvelle tentative)."""
 

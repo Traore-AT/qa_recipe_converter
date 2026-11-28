@@ -20,6 +20,19 @@ def resolve_assignee(project, user_id):
     return member, None
 
 
+def cases_planned_elsewhere(project, sprint):
+    """
+    Identifiants des cas planifiés dans un autre sprint du projet et absents de `sprint`.
+
+    Chaque sprint garde ses propres cas : un cas n'apparaît dans plusieurs sprints que s'il y a été
+    explicitement reporté (« Reporter les cas ») ou rejoué (campagne de non-régression).
+    """
+    from .models import UseCaseAssignment
+    in_sprint = UseCaseAssignment.objects.filter(sprint=sprint).values('use_case_id')
+    return (UseCaseAssignment.objects.filter(use_case__project=project, sprint__isnull=False)
+            .exclude(sprint=sprint).exclude(use_case_id__in=in_sprint).values('use_case_id'))
+
+
 def assignable_members(project):
     """Membres de l'équipe, avec leur éventuelle appartenance au projet."""
     in_project = {m.user_id: m for m in ProjectMember.objects.filter(project=project)}

@@ -30,10 +30,15 @@ COLUMN_ALIASES = {
         'observe', 'observed', 'obtenu', 'resultat obtenu'
     ],
     'jira_ticket': [
-        'ticket jira', 'jira ticket', 'jira', 'num jira', 'n jira',
-        'num de ticket', 'ref jira', 'reference jira', 'id jira',
+        'ticket jira', 'tickets jira', 'tiket jira', 'tikets jira', 'jira ticket', 'jira',
+        'num jira', 'n jira', 'numero jira', 'num de ticket', 'numero de ticket', 'n ticket',
+        'ref jira', 'reference jira', 'id jira', 'cle jira', 'issue key',
     ],
 }
+
+# Colonnes propres à chaque ligne : une cellule vide ne reprend pas la valeur de la ligne précédente
+# (sinon un cas sans ticket hériterait du ticket Jira du cas d'au-dessus).
+NO_FILL_DOWN_FIELDS = {'jira_ticket'}
 
 
 def _strip_accents(text: str) -> str:
@@ -47,12 +52,16 @@ def _strip_accents(text: str) -> str:
 def normalize(text: str) -> str:
     """Normalize text: lowercase, strip, remove accents, collapse spaces."""
     text = text.strip().lower().replace('\n', ' ').replace('\r', '')
-    return _strip_accents(text)
+    text = _strip_accents(text).replace('°', ' ').replace('º', ' ').replace('(s)', 's')
+    return ' '.join(text.split())
 
 
 def detect_column(header: str) -> str | None:
     """Return the field name for a given header string, or None."""
     h = normalize(header)
+    if not h:
+        # Un en-tête vide serait « contenu » dans n'importe quel alias.
+        return None
     for field, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
             # Alias court (2-3 lettres ex. "UC") : correspondance mot entier pour
@@ -69,6 +78,8 @@ class DocxParser:
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.document = None
+        # Rapport d'analyse par tableau (colonnes reconnues, lignes extraites/ignorées), rempli à l'extraction.
+        self.tables_report: list[dict] = []
 
     def _load_document(self):
         try:
@@ -112,21 +123,29 @@ class DocxParser:
         rows = table.rows
         if len(rows) < 2:
             logger.debug(f"Tableau {table_idx + 1} ignoré (moins de 2 lignes).")
+            self.tables_report.append({'index': table_idx + 1, 'columns': [], 'rows': 0, 'skipped_rows': 0,
+                                       'ignored': 'Moins de 2 lignes (pas de cas de test)'})
             return []
 
         # Detect header row (first row)
         header_row = rows[0]
         column_map = {}  # col_index -> field_name
 
+        report = {'index': table_idx + 1, 'columns': [], 'rows': 0, 'skipped_rows': 0, 'ignored': ''}
+        self.tables_report.append(report)
         for col_idx, cell in enumerate(header_row.cells):
             cell_text = self._get_cell_text(cell)
             field = detect_column(cell_text)
-            if field and field not in column_map.values():
+            if field and field in column_map.values():
+                field = None  # colonne en double : seule la première est importée
+            if field:
                 column_map[col_idx] = field
                 logger.debug(f"Colonne détectée : '{cell_text}' -> '{field}'")
+            report['columns'].append({'header': cell_text, 'field': field})
 
         if not column_map:
             logger.warning(f"Tableau {table_idx + 1} : aucune colonne reconnue, ignoré.")
+            report['ignored'] = 'Aucune colonne reconnue'
             return []
 
         logger.info(f"Tableau {table_idx + 1} : colonnes = {list(column_map.values())}")
@@ -142,6 +161,7 @@ class DocxParser:
                 'steps': '',
                 'expected_results': '',
                 'observed_results': '',
+                'jira_ticket': '',
             }
 
             row_is_empty = True
@@ -153,7 +173,7 @@ class DocxParser:
                 cell = row.cells[col_idx]
                 cell_text = self._get_cell_text(cell)
 
-                if not cell_text and col_idx in last_values:
+                if not cell_text and col_idx in last_values and field_name not in NO_FILL_DOWN_FIELDS:
                     cell_text = last_values[col_idx]
                 elif cell_text:
                     last_values[col_idx] = cell_text
@@ -162,6 +182,7 @@ class DocxParser:
                 uc_data[field_name] = cell_text
 
             if row_is_empty:
+                report['skipped_rows'] += 1
                 continue
 
             # Skip rows that look like repeated header rows (all cells exactly match known headers)
@@ -174,8 +195,10 @@ class DocxParser:
                         n == alias for aliases in COLUMN_ALIASES.values() for alias in aliases
                     )
                 if all(_is_header_word(v) for v in filled_vals):
+                    report['skipped_rows'] += 1
                     continue
 
             use_cases.append(uc_data)
 
+        report['rows'] = len(use_cases)
         return use_cases

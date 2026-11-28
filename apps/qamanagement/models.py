@@ -49,9 +49,8 @@ class Sprint(models.Model):
         return self.status in (self.Status.COMPLETED, self.Status.CLOSED)
 
     def case_statuses(self):
-        """Statut de chaque cas du sprint : {use_case_id: statut} (un cas = une seule entrée)."""
-        field = 'status' if self.is_frozen else 'use_case__status'
-        return dict(self.assignments.values_list('use_case_id', field))
+        """Statut de chaque cas dans ce sprint : {use_case_id: statut} (un cas = une seule entrée)."""
+        return dict(self.assignments.values_list('use_case_id', 'status'))
 
     @property
     def stats(self):
@@ -77,6 +76,7 @@ class UseCaseAssignment(models.Model):
     assigned_to  = models.ForeignKey('teams.ProjectMember', on_delete=models.SET_NULL, null=True, blank=True, related_name='uc_assignments')
     assigned_by  = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_assignments')
     assigned_at  = models.DateTimeField(auto_now_add=True)
+    # Résultat du cas dans CE sprint : deux sprints partageant un cas (report) ont chacun le leur.
     status       = models.CharField(max_length=20, default='À tester')
     carried_from = models.ForeignKey(Sprint, on_delete=models.SET_NULL, null=True, blank=True, related_name='carried_assignments',
                                      help_text='Sprint dont le cas a été reporté')
@@ -97,10 +97,8 @@ class UseCaseAssignment(models.Model):
 
     @property
     def effective_status(self):
-        """Statut à afficher : résultat figé si le sprint est terminé, sinon statut courant du cas."""
-        if self.sprint_id and self.sprint.is_frozen:
-            return self.status
-        return self.use_case.status
+        """Statut à afficher : résultat du cas dans son sprint ; hors sprint, dernier statut du cas."""
+        return self.status if self.sprint_id else self.use_case.status
 
 
 class UseCaseExecution(models.Model):
