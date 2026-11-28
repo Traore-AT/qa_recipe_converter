@@ -42,6 +42,12 @@ class ConversionJob(models.Model):
         null=True, blank=True, related_name='conversion_jobs',
         verbose_name='Uploadé par'
     )
+    # Import direct depuis le Kanban : les cas de la recette appartiennent à ce sprint.
+    sprint      = models.ForeignKey(
+        'qamanagement.Sprint', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='imports',
+        verbose_name="Sprint d'import"
+    )
 
     class Meta:
         ordering         = ['-created_at']

@@ -374,3 +374,93 @@ class JiraWebhookView(APIView):
             return _error('Contenu invalide.')
         return Response({'result': jira.handle_webhook(payload)})
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Import de cas dans un sprint (Kanban)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SprintCaseImportSerializer(serializers.Serializer):
+    word_file = serializers.FileField()
+    dry_run = serializers.BooleanField(required=False, default=False)
+    user_ids = serializers.ListField(child=serializers.IntegerField(), required=False, max_length=50)
+
+
+def _int_list(request, name):
+    """`user_ids` en champs répétés ou en liste séparée par des virgules (multipart)."""
+    values = [v for raw in request.data.getlist(name) for v in str(raw).split(',') if v.strip()]
+    return [v.strip() for v in values]
+
+
+class SprintCaseImportView(ProjectAPIView):
+    """
+    Importe les cas d'un document Word dans ce sprint. `dry_run=true` : aperçu (colonnes, tickets Jira,
+    doublons) sans rien enregistrer. `user_ids` : responsables (répartition équilibrée) ; vide = non assignés.
+    """
+    parser_classes = [MultiPartParser, FormParser]
+
+    @extend_schema(request={'multipart/form-data': SprintCaseImportSerializer})
+    def post(self, request, **kwargs):
+        from apps.core.word_import import WordImportError, read_word_document, uploaded_docx
+        from apps.core.word_validation import WordFileValidationError, validate_word_upload
+        from .services import resolve_assignee
+        from .sprint_import import SprintImportError, import_into_sprint, plan_rows
+
+        project = self.project()
+        _require_manage(request.user, project)
+        sprint = self.sprint(project)
+        data = {'word_file': request.FILES.get('word_file'), 'user_ids': _int_list(request, 'user_ids')}
+        if 'dry_run' in request.data:
+            data['dry_run'] = request.data['dry_run']
+        options = SprintCaseImportSerializer(data=data)
+        options.is_valid(raise_exception=True)
+        word_file, dry_run = options.validated_data['word_file'], options.validated_data['dry_run']
+        if sprint.is_frozen:
+            return _error("Ce sprint est terminé : rouvrez-le pour y importer des cas.")
+        try:
+            validate_word_upload(word_file)
+            with uploaded_docx(word_file) as path:
+                analysis, rows = read_word_document(path)
+        except (WordFileValidationError, WordImportError) as exc:
+            return _error(str(exc))
+        except ValueError as exc:
+            return _error(str(exc), status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        if dry_run:
+            plan = plan_rows(project, rows)
+            duplicates = sum(1 for e in plan if e['duplicate_of'] or e['duplicate_row'])
+            return Response({**analysis, 'rows': plan, 'new_cases': len(plan) - duplicates,
+                             'duplicates': duplicates, 'sprint': {'id': str(sprint.id), 'name': sprint.name}})
+
+        members = []
+        for user_id in dict.fromkeys(options.validated_data.get('user_ids') or []):
+            member, error = resolve_assignee(project, user_id)
+            if error:
+                return _error(error)
+            members.append(member)
+        try:
+            result = import_into_sprint(project, sprint, request.user, word_file, rows, members)
+        except SprintImportError as exc:
+            return _error(str(exc))
+
+        imported, skipped = len(result['cases']), len(result['skipped'])
+        self.log(project, 'sprint_cases_imported',
+                 f'{imported} cas importé(s) dans le sprint « {sprint.name} » depuis {word_file.name}'
+                 + (f' ({skipped} doublon(s) ignoré(s))' if skipped else ''),
+                 metadata={'job_id': str(result['job'].id), 'sprint_id': str(sprint.id)},
+                 target_users=[pm.user for pm in members])
+        if members:
+            try:
+                from apps.teams.email import send_sprint_assignment_email
+                for assignment in result['assignments']:
+                    send_sprint_assignment_email(assignment, sprint, request.user)
+            except Exception:
+                logger.exception('Failed to send assignment email')
+        return Response({
+            'imported': imported,
+            'skipped': result['skipped'],
+            'job_id': str(result['job'].id),
+            'assignment_ids': [str(a.id) for a in result['assignments']],
+            'case_numbers': [c.case_number for c in result['cases']],
+            'distribution': result['distribution'],
+        }, status=status.HTTP_201_CREATED)
