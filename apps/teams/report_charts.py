@@ -206,3 +206,36 @@ def sprint_chart(sprints, width, max_sprints=12):
 
     legend(drawing, [('Taux de réussite', SERIES[0]), ('Avancement', SERIES[1])], label_w, height - 9, shape='square')
     return drawing
+
+
+def score_chart(rows, width, max_rows=15):
+    """
+    Score de performance /100 par projet (une seule série, barres horizontales triées),
+    score et niveau écrits en bout de barre ; un projet non évalué est signalé sans barre.
+    rows : [{'name', 'score' (None si non évalué), 'level_label'}].
+    """
+    rows = rows[:max_rows]
+    if not rows:
+        return None
+    label_w, right, axis_h = 118, 96, 14
+    row_h = BAR + 9
+    height = axis_h + row_h * len(rows) + 4
+    drawing = Drawing(width, height)
+    plot_w = width - label_w - right
+    plot_top = height - 2
+    for tick in (0, 25, 50, 75, 100):
+        x = label_w + plot_w * tick / 100
+        drawing.add(Line(x, axis_h, x, plot_top, strokeColor=AXIS if tick == 0 else GRID, strokeWidth=HAIRLINE))
+        drawing.add(_text(x, axis_h - 10, str(tick), size=6.5, color=INK_MUTED, anchor='middle'))
+    for i, row in enumerate(rows):
+        y = plot_top - (i + 1) * row_h + 4.5
+        name = row['name'] if len(row['name']) <= 26 else row['name'][:25] + '…'
+        drawing.add(_text(label_w - 6, y + 1, name, size=7, anchor='end'))
+        if row['score'] is None:
+            drawing.add(_text(label_w + 4, y + 1, 'Non évalué (aucun cas exécuté)', size=6.5, color=INK_MUTED))
+            continue
+        length = plot_w * row['score'] / 100
+        _bar(drawing, label_w, y, length, SERIES[0])
+        score = f'{row["score"]:g}'.replace('.', ',')
+        drawing.add(_text(label_w + length + 4, y + 1, f'{score}/100 · {row["level_label"]}', size=6.5, bold=True))
+    return drawing

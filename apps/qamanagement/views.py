@@ -873,6 +873,69 @@ class TeamPerformanceView(APIView):
         return Response({'results': results, 'count': len(results)})
 
 
+def _team_for_reports(slug, user):
+    team = get_object_or_404(Team, slug=slug)
+    if not team.is_member(user):
+        raise PermissionDenied("Vous n'êtes pas membre de cette équipe.")
+    return team
+
+
+def _portfolio_projects(request, team):
+    """
+    `?projects=id1,id2` (ou paramètre répété) → projets visibles de l'équipe, dans l'ordre alphabétique.
+    Absent → tous les projets visibles. Un projet inconnu, d'une autre équipe ou non visible → 400.
+    """
+    visible = [p for p in Project.objects.filter(team=team).select_related('team').order_by('name')
+               if can_view_project(request.user, p)]
+    raw = [v.strip() for part in request.query_params.getlist('projects') for v in part.split(',') if v.strip()]
+    if not raw:
+        projects = visible
+    else:
+        ids = {_uuid_or_400(v, 'projects') for v in raw}
+        projects = [p for p in visible if p.id in ids]
+        if len(projects) != len(ids):
+            raise _bad_request('projects', "Un ou plusieurs projets n'appartiennent pas à cette équipe ou ne vous sont pas accessibles.")
+    if not projects:
+        raise _bad_request('projects', 'Sélectionnez au moins un projet.')
+    return projects
+
+
+class TeamPortfolioView(APIView):
+    """Aperçu du rapport global : niveau de performance de chaque projet choisi et de l'ensemble."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug):
+        team = _team_for_reports(slug, request.user)
+        projects = _portfolio_projects(request, team)
+        rows = [(p, analytics.project_performance(p)) for p in projects]
+        overall = analytics.portfolio_performance([perf for _, perf in rows])
+        return Response({
+            'team': {'name': team.name, 'slug': team.slug},
+            'performance': overall,
+            'projects': [{'id': str(p.id), 'name': p.name, 'slug': p.slug, 'status': p.status,
+                          'status_label': p.get_status_display(), 'sprints': p.sprints.count(), 'performance': perf}
+                         for p, perf in rows],
+        })
+
+
+class TeamPortfolioPDFView(APIView):
+    """Rapport PDF global des projets choisis (`?projects=` ; tous les projets visibles par défaut)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug):
+        from apps.teams.reports import generate_portfolio_report
+        team = _team_for_reports(slug, request.user)
+        projects = _portfolio_projects(request, team)
+        pdf = generate_portfolio_report(team, projects, request.user.get_full_name() or request.user.username)
+        _log_activity(None, team, request.user, 'portfolio_report',
+                      f'Rapport global généré pour {len(projects)} projet(s) : {", ".join(p.name for p in projects)}')
+        suffix = slugify(projects[0].name) if len(projects) == 1 else f'{len(projects)}-projets'
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'attachment; filename="rapport-global-{team.slug}-{suffix}-{timezone.localdate():%Y%m%d}.pdf"')
+        return response
+
+
 class ProjectReportView(APIView):
     """Rapport (JSON) d'un projet, d'un sprint ou d'une sélection de sprints."""
     permission_classes = [IsAuthenticated]

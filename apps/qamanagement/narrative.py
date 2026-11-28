@@ -436,10 +436,11 @@ def project_assessment(stats, perf):
     return level['label']
 
 
-def portfolio_narrative(team, rows, kind='weekly'):
+def portfolio_narrative(team, rows, kind='weekly', overall=None):
     """
-    rows : [{'project': Project, 'stats': stats, 'performance': perf}] pour chaque projet visible.
-    kind : 'weekly' (rapport hebdomadaire) ou 'daily' (Daily Scrum).
+    rows : [{'project': Project, 'stats': stats, 'performance': perf}] pour chaque projet retenu.
+    kind : 'weekly' (rapport hebdomadaire), 'daily' (Daily Scrum) ou 'selection' (projets choisis).
+    overall : niveau de performance global (analytics.portfolio_performance), cité s'il est fourni.
     """
     totals = {k: sum(r['stats'][k] for r in rows) for k in ('total', 'passed', 'failed', 'blocked', 'executed')}
     totals['success_rate'] = round(totals['passed'] / totals['total'] * 100, 1) if totals['total'] else 0
@@ -464,6 +465,14 @@ def portfolio_narrative(team, rows, kind='weekly'):
     if kind == 'daily':
         intro = [f"Ce point quotidien présente l'état d'avancement des tests {scope} "
                  f"de l'équipe {team.name} au {today}, afin d'orienter les priorités de la journée."]
+    elif kind == 'selection':
+        names = join(r['project'].name for r in rows)
+        intro = [f"Ce rapport présente l'état d'avancement et le niveau de performance des tests "
+                 f"{'du projet' if len(rows) == 1 else f'des {len(rows)} projets'} sélectionnés de l'équipe "
+                 f"{team.name} ({names}), au {today}.",
+                 "Il retrace ce qui a été réalisé dans chaque projet — sprints, cas exécutés, résultats, anomalies — "
+                 "évalue le niveau de performance de chacun puis celui de l'ensemble, afin de mesurer "
+                 "l'avancement de l'entreprise et d'orienter les priorités."]
     else:
         intro = [f"Ce rapport consolide l'état de la qualité {scope} de l'équipe "
                  f"{team.name} ({plural(len(active), 'projet actif', 'projets actifs')}) au {today}.",
@@ -491,6 +500,14 @@ def portfolio_narrative(team, rows, kind='weekly'):
                          f'({join(f"{n} : {c}" for n, c in critical)}).' if critical else '.'))
     if idle:
         key_points.append('Tests non démarrés : ' + join(r['project'].name for r in idle) + '.')
+    if overall and overall['score'] is not None:
+        key_points.insert(0, f'Niveau de performance global : {overall["level_label"]} ({num(overall["score"])}/100).')
+        scored = [r for r in rows if r['performance']['score'] is not None]
+        if len(scored) > 1:
+            top = max(scored, key=lambda r: r['performance']['score'])
+            low = min(scored, key=lambda r: r['performance']['score'])
+            key_points.append(f'Score le plus élevé : {top["project"].name} ({num(top["performance"]["score"])}/100) ; '
+                              f'le plus faible : {low["project"].name} ({num(low["performance"]["score"])}/100).')
     key_points.append(f'Niveau de satisfaction global : {level["label"]}.')
 
     recommendations = []
@@ -520,9 +537,14 @@ def portfolio_narrative(team, rows, kind='weekly'):
 
     conclusion = []
     if totals['total']:
-        conclusion.append(f'Sur l\'ensemble du portefeuille, {totals["passed"]} cas sur {totals["total"]} sont validés '
+        subject = 'Sur les projets sélectionnés' if kind == 'selection' else "Sur l'ensemble du portefeuille"
+        conclusion.append(f'{subject}, {totals["passed"]} cas sur {totals["total"]} sont validés '
                           f'({pct(totals["success_rate"])}) ; le niveau de satisfaction global est jugé '
                           f'« {level["label"]} ».')
+        if overall and overall['score'] is not None:
+            conclusion.append(f'Le niveau de performance global des tests atteint {num(overall["score"])}/100 '
+                              f'(« {overall["level_label"]} »), avec un avancement de '
+                              f'{pct(overall["stats"]["execution_rate"])} des cas prévus.')
         if at_risk:
             conclusion.append(f'{plural(len(at_risk), "projet requiert", "projets requièrent")} une attention '
                               'particulière ; les recommandations ci-dessous précisent les actions prioritaires.')

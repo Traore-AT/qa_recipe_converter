@@ -82,6 +82,11 @@ _REPLACEMENTS = str.maketrans({'→': '>', '←': '<', '✓': 'OK', '✅': 'OK',
 # Briques de mise en page
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _n(value):
+    """Nombre au format français : 93.8 → « 93,8 », 80.0 → « 80 »."""
+    return f'{value:g}'.replace('.', ',')
+
+
 def _plain(value):
     """Texte imprimable avec les polices PDF standard (Windows-1252)."""
     text = '—' if value in (None, '') else str(value)
@@ -303,7 +308,7 @@ def _conclusion(narrative):
 
 def _performance_section(perf):
     stats, defects = perf['stats'], perf['defects']
-    score = '—' if perf['score'] is None else f'{perf["score"]:g}/100'
+    score = '—' if perf['score'] is None else f'{_n(perf["score"])}/100'
     level_color = LEVEL_COLORS[perf['level']]
     labels = {
         'pass_rate': ('Réussite des cas exécutés', 'Cas passés / cas exécutés'),
@@ -312,16 +317,16 @@ def _performance_section(perf):
         'stability_rate': ('Stabilité', 'Part des cas exécutés sans régression'),
     }
     rows = [[labels[k][0], labels[k][1], f'{perf["weights"][k]} %',
-             _p(f'{perf["components"][k]:g} %', 'cell', bold=True)] for k in perf['weights']]
-    extra = [f'Automatisation : {perf["automation_rate"]:g} % ({perf["automated"]} cas)',
-             f'Densité d\'anomalies : {perf["defect_density"]:g} par cas exécuté']
+             _p(f'{_n(perf["components"][k])} %', 'cell', bold=True)] for k in perf['weights']]
+    extra = [f'Automatisation : {_n(perf["automation_rate"])} % ({perf["automated"]} cas)',
+             f'Densité d\'anomalies : {_n(perf["defect_density"])} par cas exécuté']
     if defects['avg_resolution_days'] is not None:
-        extra.append(f'Délai moyen de résolution : {defects["avg_resolution_days"]:g} jour(s)')
+        extra.append(f'Délai moyen de résolution : {_n(defects["avg_resolution_days"])} jour(s)')
     return [
         _p('Niveau de performance des tests', 'h2'),
         _kpis([('Score global', score, level_color), ('Niveau', perf['level_label'], level_color),
-               ('Taux de réussite', f'{stats["success_rate"]:g} %', GREEN),
-               ('Avancement', f'{stats["execution_rate"]:g} %', BLUE)]),
+               ('Taux de réussite', f'{_n(stats["success_rate"])} %', GREEN),
+               ('Avancement', f'{_n(stats["execution_rate"])} %', BLUE)]),
         Spacer(1, 6),
         _table(['Composante', 'Mode de calcul', 'Poids', 'Résultat'], rows, [4, 6, 1.4, 1.8]),
         Spacer(1, 4),
@@ -369,7 +374,7 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
         KeepTogether([
             _p("Courbe d'évolution", 'h2'),
             _p(f'Du {_fr_date(evolution["start"])} au {_fr_date(evolution["end"])} — évolution du taux de réussite : '
-               f'{sign}{evolution["trend"]:g} point(s)', 'muted'),
+               f'{sign}{_n(evolution["trend"])} point(s)', 'muted'),
             _line_chart(evolution['points'], [('success_rate', 'Taux de réussite', charts.SERIES[0]),
                                               ('execution_rate', 'Avancement', charts.SERIES[1])], percent=True),
         ]),
@@ -386,8 +391,8 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
         ['Sprint', 'Période', 'Statut', 'Cas', 'Passés', 'Échoués', 'Réussite', 'Anom.', 'Régr.', 'Score'],
         [[s['name'], f'{_fr_date(s["start_date"])} - {_fr_date(s["end_date"])} ({s["duration_days"]} j)',
           s['status_label'], s['stats']['total'], s['stats']['passed'], s['stats']['failed'],
-          f'{s["stats"]["success_rate"]:g} %', s['defects']['total'], s['regressed_cases'],
-          '—' if s['score'] is None else f'{s["score"]:g}'] for s in data['sprints']],
+          f'{_n(s["stats"]["success_rate"])} %', s['defects']['total'], s['regressed_cases'],
+          '—' if s['score'] is None else f'{_n(s["score"])}'] for s in data['sprints']],
         [3.2, 3.9, 1.8, 1.1, 1.6, 1.8, 1.9, 1.4, 1.3, 1.4], empty='Aucun sprint'))
     if len(data['sprints']) > 1:
         chart = _sprint_chart(data['sprints'])
@@ -419,7 +424,7 @@ def generate_project_report(project, sprints, generated_by) -> bytes:
     story.append(_table(
         ['Membre', 'Cas', 'Passés', 'Échoués', 'Bloqués', 'En cours', 'À tester', 'Avancement'],
         [[m['member'], m['total'], m['passed'], m['failed'], m['blocked'], m['in_progress'], m['not_run'],
-          f'{m["execution_rate"]:g} %'] for m in data['members']],
+          f'{_n(m["execution_rate"])} %'] for m in data['members']],
         [4, 1.2, 1.5, 1.6, 1.6, 1.6, 1.6, 2], empty='Aucun cas assigné'))
 
     story.append(_p(f'Cas de test ({len(data["cases"])})', 'h2'))
@@ -459,11 +464,11 @@ def _team_story(team, user, detailed):
         _p("Vue d'ensemble", 'h2'),
         _kpis([('Projets', len(projects), INK), ('Projets actifs', sum(p.status == 'active' for p in projects), BLUE),
                ('Cas de test', total, INK), ('Passés', passed, GREEN), ('Échoués', failed, RED),
-               ('Taux de réussite', f'{rate:g} %', GREEN)]),
+               ('Taux de réussite', f'{_n(rate)} %', GREEN)]),
         _p('Projets', 'h2'),
         _table(['Projet', 'Statut', 'Cas', 'Passés', 'Échoués', 'Bloqués', 'En cours', 'À tester', 'Auto.', 'Réussite'],
                [[p.name, p.get_status_display(), s['total'], s['passed'], s['failed'], s['blocked'],
-                 s['in_progress'], s['not_run'], s['automated'], f'{s["success_rate"]:g} %'] for p, s in all_stats],
+                 s['in_progress'], s['not_run'], s['automated'], f'{_n(s["success_rate"])} %'] for p, s in all_stats],
                [4, 1.6, 1.1, 1.5, 1.6, 1.6, 1.6, 1.6, 1.2, 1.8], empty='Aucun projet'),
     ]
     story += _key_points(narrative)
@@ -471,8 +476,8 @@ def _team_story(team, user, detailed):
         story += [
             _p('Appréciation par projet', 'h2'),
             _table(['Projet', 'Réussite', 'Avancement', 'Score', 'Appréciation'],
-                   [[row['name'], f'{row["success_rate"]:g} %', f'{row["execution_rate"]:g} %',
-                     '—' if row['score'] is None else f'{row["score"]:g}/100', _p(row['assessment'], 'cell', bold=True)]
+                   [[row['name'], f'{_n(row["success_rate"])} %', f'{_n(row["execution_rate"])} %',
+                     '—' if row['score'] is None else f'{_n(row["score"])}/100', _p(row['assessment'], 'cell', bold=True)]
                     for row in narrative['projects']], [5, 2, 2.2, 2, 4.4]),
         ]
     for project, stats in all_stats:
@@ -514,3 +519,129 @@ def generate_weekly_report(team: Team, generated_by: str, user=None) -> bytes:
         ('Période', f'du {_fr_date(start)} au {_fr_date(start + timedelta(days=6))}'),
         ('Généré par', generated_by), ('Date', _fr_date(timezone.now(), 'd/m/Y à H:i'))])
     return _render(f'Rapport hebdomadaire — {team.name}', story + _team_story(team, user, detailed=True))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rapport global d'une sélection de projets
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAX_FAILED_PER_PROJECT = 6
+MAX_RECOMMENDATIONS_PER_PROJECT = 4
+
+
+def _score_text(perf):
+    return '—' if perf['score'] is None else f'{_n(perf["score"])}/100'
+
+
+def _project_section(project, report):
+    """Ce qui a été fait dans un projet : sprints, résultats, cas en échec, niveau et recommandations."""
+    perf, stats = report['performance'], report['performance']['stats']
+    narrative = report['narrative']
+    level_color = LEVEL_COLORS[perf['level']]
+    story = [
+        CondPageBreak(9 * cm),
+        _p(f'{project.name} — {project.get_status_display()}', 'h2'),
+        _kpis([('Score', _score_text(perf), level_color), ('Niveau', perf['level_label'], level_color),
+               ('Cas exécutés', f'{stats["executed"]} / {stats["total"]}', BLUE),
+               ('Réussite', f'{_n(stats["success_rate"])} %', GREEN), ('Anomalies actives', perf['defects']['active'], RED)]),
+        Spacer(1, 6),
+    ]
+    if stats['total']:
+        story.append(_status_bar(stats))
+    story += [_p('Ce qui a été réalisé', 'h3'), *_bullets(narrative['key_points'])]
+    if report['sprints']:
+        story += [
+            _p(f'Sprints ({len(report["sprints"])})', 'h3'),
+            _table(['Sprint', 'Période', 'Statut', 'Cas', 'Exécutés', 'Réussite', 'Score'],
+                   [[s['name'], f'{_fr_date(s["start_date"])} - {_fr_date(s["end_date"])}', s['status_label'],
+                     s['stats']['total'], s['stats']['executed'], f'{_n(s["stats"]["success_rate"])} %',
+                     '—' if s['score'] is None else f'{_n(s["score"])}'] for s in report['sprints']],
+                   [4, 3.8, 1.9, 1.1, 1.6, 1.7, 1.4]),
+        ]
+    failed = narrative['attention_cases']
+    if failed:
+        story += [
+            _p(f'Cas en échec ou bloqués ({len(failed)})', 'h3'),
+            _table(['Cas', 'Intitulé', 'Statut', 'Constat', 'Responsable(s)'],
+                   [[f'CAS-{i["case_number"]:03d}' + ('\n' + i['jira_ticket'] if i['jira_ticket'] else ''),
+                     _p(i['title'], 'cell', limit=100), _status(i['status']),
+                     _p(i['observed'] or i['comment'] or 'Non renseigné', 'cell', limit=180),
+                     _p(', '.join(i['testers']) or 'À attribuer', 'cell')] for i in failed[:MAX_FAILED_PER_PROJECT]],
+                   [2, 4.2, 1.7, 5.5, 2.6]),
+        ]
+        if len(failed) > MAX_FAILED_PER_PROJECT:
+            story.append(_p(f'… et {len(failed) - MAX_FAILED_PER_PROJECT} autre(s) : voir le rapport du projet.', 'muted'))
+    story += [
+        _p('Appréciation et recommandations', 'h3'),
+        *_texts(narrative['conclusion'][:2]),
+        *_bullets(narrative['recommendations'][:MAX_RECOMMENDATIONS_PER_PROJECT], numbered=True),
+    ]
+    return story
+
+
+def generate_portfolio_report(team, projects, generated_by) -> bytes:
+    """
+    Rapport PDF global des projets choisis : synthèse et niveau de performance global, niveau de chaque
+    projet, détail de ce qui a été réalisé dans chacun, recommandations et conclusion d'ensemble.
+    """
+    from apps.qamanagement.analytics import build_report, portfolio_performance
+    from apps.qamanagement.narrative import portfolio_narrative
+
+    reports = [(p, build_report(p)) for p in projects]
+    overall = portfolio_performance([r['performance'] for _, r in reports])
+    narrative = portfolio_narrative(
+        team, [{'project': p, 'stats': r['performance']['stats'], 'performance': r['performance']} for p, r in reports],
+        kind='selection', overall=overall)
+    stats, level_color = overall['stats'], LEVEL_COLORS[overall['level']]
+
+    story = _heading('Rapport global des projets', team.name, [
+        ('Équipe', team.name),
+        ('Projets', ', '.join(p.name for p in projects)),
+        ('Généré par', generated_by), ('Date', _fr_date(timezone.now(), 'd/m/Y à H:i'))])
+    story += _introduction(narrative)
+    story += [
+        _p('Synthèse globale', 'h2'),
+        _kpis([('Score global', _score_text(overall), level_color), ('Niveau global', overall['level_label'], level_color),
+               ('Taux de réussite', f'{_n(stats["success_rate"])} %', GREEN),
+               ('Avancement', f'{_n(stats["execution_rate"])} %', BLUE)]),
+        Spacer(1, 4),
+        _kpis([('Projets', len(projects), INK), ('Cas de test', stats['total'], INK), ('Passés', stats['passed'], GREEN),
+               ('Échoués', stats['failed'], RED), ('Bloqués', stats['blocked'], AMBER),
+               ('Anomalies actives', overall['defects']['active'], RED)]),
+        Spacer(1, 8),
+    ]
+    if stats['total']:
+        story += [_p('Répartition globale des cas par statut', 'h3'), _status_bar(stats)]
+    story += _key_points(narrative)
+    story.append(KeepTogether(_performance_section(overall)))
+
+    ranked = sorted(reports, key=lambda pr: (pr[1]['performance']['score'] is None,
+                                             -(pr[1]['performance']['score'] or 0)))
+    story += [
+        _p('Niveau de performance par projet', 'h2'),
+        _table(['Projet', 'Cas', 'Exécutés', 'Réussite', 'Avancement', 'Anom. actives', 'Régr.', 'Score', 'Niveau'],
+               [[p.name, r['performance']['stats']['total'], r['performance']['stats']['executed'],
+                 f'{_n(r["performance"]["stats"]["success_rate"])} %',
+                 f'{_n(r["performance"]["stats"]["execution_rate"])} %',
+                 r['performance']['defects']['active'], r['performance']['regressed_cases'],
+                 _score_text(r['performance']),
+                 _p(r['performance']['level_label'], 'cell', color=LEVEL_COLORS[r['performance']['level']], bold=True)]
+                for p, r in ranked],
+               [4.2, 1.2, 1.7, 1.8, 2.1, 2, 1.2, 1.7, 2]),
+    ]
+    chart = charts.score_chart([{'name': p.name, 'score': r['performance']['score'],
+                                 'level_label': r['performance']['level_label']} for p, r in ranked], WIDTH)
+    if chart:
+        story.append(KeepTogether([_p('Score de performance par projet', 'h3'), chart]))
+    if len(reports) > 1:
+        bars = _sprint_chart([{'name': p.name, 'stats': r['performance']['stats']} for p, r in reports])
+        if bars:
+            story.append(KeepTogether([_p('Réussite et avancement par projet', 'h3'), bars]))
+
+    story.append(_p('Détail par projet', 'h2'))
+    story.append(_p('Pour chaque projet : indicateurs, réalisations, sprints, cas en échec et recommandations.', 'muted'))
+    for project, report in reports:
+        story += _project_section(project, report)
+
+    story += _conclusion(narrative)
+    return _render(f'Rapport global des projets — {team.name}', story)
