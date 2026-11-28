@@ -91,6 +91,7 @@ Routes sous `/api/teams/{team}/projects/{project}/` ; `?sprints=id1,id2` restrei
 - **Validation Jira** : format `PROJET-123`, puis existence si Jira est configuré — `POST /api/jobs/{id}/jira/validate/` (recette) et `POST /api/teams/{team}/projects/{project}/jira/validate-tickets/` (Kanban).
 - **Import Word** : la colonne « Tickets Jira » (variantes : « Ticket Jira », « N° Ticket », « Numéro Jira »…) est importée ; plusieurs tickets dans une cellule deviennent « QA-1, QA-2 ».
 - **Charte GLOBAL ITEC** (logo, pied de page) : `apps/teams/reports.py`.
+- **Phrases clés des rapports** (`apps/qamanagement/narrative.py`) : chaque rapport — sprint, plusieurs sprints, projet, et rapport global des projets (hebdomadaire, Daily Scrum) — comporte une introduction, des points clés, les cas en échec avec leurs constats (résultat observé, dernier commentaire), la répartition des actions par responsable, des recommandations (dont celles déduites des commentaires : fichiers, droits, workflow, erreurs serveur…), le niveau de satisfaction et une conclusion. Le texte est calculé à partir des mêmes données que les tableaux (PDF, feuille Excel « Rapport », clé `narrative` du rapport JSON). Un taux de 100 % est présenté avec la réserve d'usage : il n'atteste pas l'absence totale de défauts.
 
 Mise à jour d'un environnement existant : `pip install -r requirements.txt` ; les migrations s'appliquent automatiquement au démarrage de Gunicorn.
 

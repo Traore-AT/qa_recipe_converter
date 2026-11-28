@@ -369,7 +369,7 @@ def build_report(project, sprints=None):
     else:
         scope = {'type': 'sprints', 'label': f'{len(sprints)} sprints sélectionnés'}
 
-    return {
+    data = {
         'project': {
             'name': project.name, 'slug': project.slug, 'description': project.description,
             'status': project.status, 'status_label': project.get_status_display(),
@@ -393,6 +393,10 @@ def build_report(project, sprints=None):
         } for c in cases],
         'defects': [defect_row(d) for d in defects],
     }
+    from .narrative import project_narrative
+    # Phrases clés (introduction, points clés, plan d'action, recommandations, conclusion).
+    data['narrative'] = project_narrative(project, sprints, data)
+    return data
 
 
 __all__ = [
